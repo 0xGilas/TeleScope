@@ -18,6 +18,7 @@ import type {
   PublicForwardRecord,
   RawChannelMessage,
   StatsSeriesLine,
+  TimezoneMode,
   WeekdayHourCell,
 } from '../types/analytics';
 
@@ -431,7 +432,10 @@ export function attributeDateFromMessageStats(params: {
         publicForwardsOnDate.push({ post, forward: fwd });
         const existing = contributionMap.get(postKey);
         if (existing) {
-          existing.sharesOnDate += 1;
+          // message_stats already includes both public & private shares; avoid double-counting
+          if (existing.source !== 'message_stats') {
+            existing.sharesOnDate += 1;
+          }
         } else {
           contributionMap.set(postKey, {
             post,
@@ -446,18 +450,12 @@ export function attributeDateFromMessageStats(params: {
     }
   }
 
-  // 4) Direct publication attribution: Any post published ON or within timezone tolerance of this date
-  const selectedDayStart = Date.parse(`${dateKey}T00:00:00Z`);
-  const selectedDayEnd = Date.parse(`${dateKey}T23:59:59.999Z`);
-
+  // 4) Fallback attribution for unscanned posts published strictly on this UTC date
   for (const post of posts) {
     if (post.views <= 0 && post.forwards <= 0) continue;
-    const isExactDay = formatDateKey(post.date) === dateKey;
-    const isTimezoneMatch =
-      isExactDay ||
-      (post.date >= selectedDayStart - 14 * 3600_000 && post.date <= selectedDayEnd + 14 * 3600_000);
+    if (formatDateKey(post.date) !== dateKey) continue;
+    if (postStatsByPost[post.key]) continue;
 
-    if (!isTimezoneMatch) continue;
     const existing = contributionMap.get(post.key);
     if (!existing) {
       contributionMap.set(post.key, {
@@ -556,10 +554,32 @@ export function computeChannelBenchmarks(posts: PostRecord[]): ChannelBenchmarks
   };
 }
 
-export function computeWeekdayHourMatrix(posts: PostRecord[]): WeekdayHourCell[] {
+export function getTimezoneOffsetMinutes(mode: TimezoneMode): number {
+  if (mode === 'iran') return 210; // UTC+03:30
+  if (mode === 'local' && typeof Date !== 'undefined') {
+    return -new Date().getTimezoneOffset();
+  }
+  return 0;
+}
+
+export function getTimezoneBadgeLabel(mode: TimezoneMode): string {
+  const mins = getTimezoneOffsetMinutes(mode);
+  if (mins === 0) return 'UTC';
+  const sign = mins >= 0 ? '+' : '-';
+  const abs = Math.abs(mins);
+  const hh = String(Math.floor(abs / 60)).padStart(2, '0');
+  const mm = String(abs % 60).padStart(2, '0');
+  return `UTC${sign}${hh}:${mm}`;
+}
+
+export function computeWeekdayHourMatrix(
+  posts: PostRecord[],
+  timezoneOffsetMinutes = 0,
+): WeekdayHourCell[] {
   const buckets = new Map<string, PostRecord[]>();
+  const offsetMs = timezoneOffsetMinutes * 60_000;
   for (const post of posts) {
-    const d = new Date(post.date);
+    const d = new Date(post.date + offsetMs);
     const weekday = d.getUTCDay();
     const hourBlock = Math.floor(d.getUTCHours() / 4); // 6 blocks of 4h
     const key = `${weekday}:${hourBlock}`;
@@ -691,6 +711,10 @@ export function filterAndSortPosts(
         return b.shareRatePercent - a.shareRatePercent || b.forwards - a.forwards;
       case 'views_desc':
         return b.views - a.views;
+      case 'evergreen_desc':
+        return b.evergreenShareRatio - a.evergreenShareRatio || b.forwards - a.forwards;
+      case 'reactions_desc':
+        return b.reactionsCount - a.reactionsCount || b.views - a.views;
       case 'date_desc':
       default:
         return b.date - a.date || b.primaryId - a.primaryId;

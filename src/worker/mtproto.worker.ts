@@ -99,7 +99,8 @@ export type WorkerEvent =
   | { type: 'scan_progress'; channelId: number; scannedCount: number }
   | { type: 'attribution_progress'; channelId: number; completed: number; total: number }
   | { type: 'channel_avatars_updated'; avatars: Record<number, string> }
-  | { type: 'live_forwards_update'; channelId: number; msgId: number; forwards: number };
+  | { type: 'live_forwards_update'; channelId: number; msgId: number; forwards: number }
+  | { type: 'attribution_flood_wait'; channelId: number; waitSec: number };
 
 const AVATAR_PALETTE = ['#3390ec', '#4dcd5e', '#f5a623', '#9b6dff', '#e55353', '#27a6d1'];
 
@@ -125,11 +126,13 @@ function createTransportWebSocket(network: NetworkConfig): WebSocketConstructor 
 
   if (network.mode === 'cf-relay') {
     const relayBase = network.cfRelayUrl.trim().replace(/\/+$/, '');
+    const relayToken = (network.cfRelayToken || '').trim();
     class RelayWebSocket extends WebSocket {
       constructor(url: string | URL, protocols?: string | string[]) {
         const target = typeof url === 'string' ? url : url.toString();
         const sep = relayBase.includes('?') ? '&' : '?';
-        const wrappedUrl = `${relayBase}${sep}target=${encodeURIComponent(target)}`;
+        const tokenParam = relayToken ? `&token=${encodeURIComponent(relayToken)}` : '';
+        const wrappedUrl = `${relayBase}${sep}target=${encodeURIComponent(target)}${tokenParam}`;
         super(wrappedUrl, protocols);
       }
     }
@@ -138,6 +141,7 @@ function createTransportWebSocket(network: NetworkConfig): WebSocketConstructor 
 
   // SOCKS5 via Local Bridge
   const bridgeUrl = network.socks5.bridgeUrl.trim() || 'ws://127.0.0.1:8787';
+  const bridgeToken = (network.socks5.bridgeToken || '').trim() || undefined;
   const socksCfg = {
     host: network.socks5.host.trim(),
     port: Number(network.socks5.port) || 1080,
@@ -181,6 +185,7 @@ function createTransportWebSocket(network: NetworkConfig): WebSocketConstructor 
       this._ws.addEventListener('open', () => {
         const handshake = JSON.stringify({
           type: 'connect',
+          token: bridgeToken,
           targetUrl,
           socks5: socksCfg,
         });
@@ -1177,6 +1182,11 @@ async function handleCommand(cmd: WorkerCommand): Promise<unknown> {
               i -= 1;
               continue;
             }
+            postWorkerEvent({
+              type: 'attribution_flood_wait',
+              channelId: cmd.channelId,
+              waitSec,
+            });
             break;
           }
         }

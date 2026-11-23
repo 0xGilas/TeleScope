@@ -6,10 +6,12 @@ interface HourlyBreakdownChartProps {
   graph: ParsedStatsGraph;
   title: string;
   lang?: LanguageCode;
+  timezoneOffsetMinutes?: number;
+  timezoneLabel?: string;
 }
 
 export const HourlyBreakdownChart: React.FC<HourlyBreakdownChartProps> = React.memo(
-  ({ graph, title, lang = 'fa' }) => {
+  ({ graph, title, lang = 'fa', timezoneOffsetMinutes = 0, timezoneLabel = 'UTC' }) => {
     const primary = graph.series[0];
     const secondary = graph.series[1];
     const [hoverHour, setHoverHour] = useState<number | null>(null);
@@ -22,8 +24,25 @@ export const HourlyBreakdownChart: React.FC<HourlyBreakdownChartProps> = React.m
       };
     }, []);
 
-    const values = useMemo(() => primary?.values ?? [], [primary]);
-    const secondaryValues = useMemo(() => secondary?.values ?? [], [secondary]);
+    const rawValues = useMemo(() => primary?.values ?? [], [primary]);
+    const rawSecondaryValues = useMemo(() => secondary?.values ?? [], [secondary]);
+    const hourShift = Math.round(timezoneOffsetMinutes / 60);
+
+    const values = useMemo(() => {
+      if (rawValues.length !== 24 || hourShift === 0) return rawValues;
+      return Array.from({ length: 24 }, (_, displayHour) => {
+        const utcHour = (((displayHour - hourShift) % 24) + 24) % 24;
+        return rawValues[utcHour] ?? 0;
+      });
+    }, [rawValues, hourShift]);
+
+    const secondaryValues = useMemo(() => {
+      if (rawSecondaryValues.length !== 24 || hourShift === 0) return rawSecondaryValues;
+      return Array.from({ length: 24 }, (_, displayHour) => {
+        const utcHour = (((displayHour - hourShift) % 24) + 24) % 24;
+        return rawSecondaryValues[utcHour] ?? 0;
+      });
+    }, [rawSecondaryValues, hourShift]);
     const count = values.length;
 
     const { maxVal, peakIdx, yTicks, yMax } = useMemo(() => {
@@ -110,7 +129,7 @@ export const HourlyBreakdownChart: React.FC<HourlyBreakdownChartProps> = React.m
       );
     }
 
-    const peakLabel = `${String(peakIdx).padStart(2, '0')}:00 UTC`;
+    const peakLabel = `${String(peakIdx).padStart(2, '0')}:00 ${timezoneLabel}`;
     const peakCount = values[peakIdx] ?? 0;
 
     return (
@@ -277,11 +296,13 @@ export const HourlyBreakdownChart: React.FC<HourlyBreakdownChartProps> = React.m
           {/* Crisp Hover Tooltip */}
           {hoverHour !== null && (
             <div
-              className="pointer-events-none absolute top-2 right-2 tg-tooltip-glass rounded-xl px-3 py-2"
+              className={`pointer-events-none absolute top-2 tg-tooltip-glass rounded-xl px-3 py-2 ${
+                hoverHour >= Math.floor(count / 2) ? 'left-12' : 'right-2'
+              }`}
               style={{ minWidth: 148 }}
             >
               <div className="text-[11px] font-medium text-[#7f91a4] font-mono-num mb-1">
-                {String(hoverHour).padStart(2, '0')}:00 UTC
+                {String(hoverHour).padStart(2, '0')}:00 {timezoneLabel}
               </div>
               <div className="space-y-1">
                 <div className="flex items-center justify-between gap-4 text-xs">

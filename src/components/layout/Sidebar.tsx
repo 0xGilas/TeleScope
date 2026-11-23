@@ -1,5 +1,5 @@
-import React from 'react';
-import { Lock, LogOut, Radio, Shield, X } from 'lucide-react';
+import React, { useMemo, useState } from 'react';
+import { Lock, LogOut, Radio, Search, Shield, X } from 'lucide-react';
 import type {
   ChannelSummary,
   LanguageCode,
@@ -19,6 +19,7 @@ interface SidebarProps {
   persistenceMode: SessionPersistenceMode;
   onToggleLang: () => void;
   onOpenVaultModal?: () => void;
+  onLockSession?: () => void;
   onLogout: () => void;
   mobileOpen: boolean;
   onCloseMobile: () => void;
@@ -33,11 +34,24 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
   persistenceMode,
   onToggleLang,
   onOpenVaultModal,
+  onLockSession,
   onLogout,
   mobileOpen,
   onCloseMobile,
 }) => {
   const t = getTranslations(lang);
+  const [channelQuery, setChannelQuery] = useState('');
+  const [confirmLogout, setConfirmLogout] = useState(false);
+
+  const filteredChannels = useMemo(() => {
+    const q = channelQuery.trim().toLowerCase();
+    if (!q) return channels;
+    return channels.filter(
+      (c) =>
+        c.title.toLowerCase().includes(q) ||
+        (c.username && c.username.toLowerCase().includes(q)),
+    );
+  }, [channels, channelQuery]);
 
   const sidebarBody = (
     <div className="flex flex-col h-full bg-[#0D1117]/95 border-e border-white/[0.08] w-[264px] shrink-0">
@@ -103,10 +117,26 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
           {t.channelsHeader}
         </div>
 
-        {channels.length === 0 ? (
+        {channels.length > 5 && (
+          <div className="px-1.5 pb-1.5">
+            <div className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-[#0B0F14] px-2.5 py-1.5">
+              <Search className="w-3.5 h-3.5 text-[#8596AA] shrink-0" />
+              <input
+                type="search"
+                value={channelQuery}
+                onChange={(e) => setChannelQuery(e.target.value)}
+                placeholder={t.searchChannelsPlaceholder}
+                aria-label={t.searchChannelsPlaceholder}
+                className="w-full min-w-0 bg-transparent text-xs text-[#F0F4F8] placeholder:text-[#8596AA] focus:outline-none"
+              />
+            </div>
+          </div>
+        )}
+
+        {filteredChannels.length === 0 ? (
           <div className="px-2.5 py-4 text-xs text-[#8B9BB0]">{t.noChannels}</div>
         ) : (
-          channels.map((ch) => {
+          filteredChannels.map((ch) => {
             const active = ch.id === activeChannelId;
             return (
               <button
@@ -147,16 +177,52 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
         )}
       </div>
 
-      {/* Footer Logout Action */}
-      <div className="p-3 border-t border-white/[0.08]">
-        <button
-          type="button"
-          onClick={onLogout}
-          className="w-full flex items-center justify-center gap-2 rounded-lg border border-white/[0.08] bg-[#0B0F14] px-3 py-2 text-xs font-medium text-[#EF4444] hover:bg-[#EF4444]/10 transition-colors cursor-pointer"
-        >
-          <LogOut className="w-3.5 h-3.5" />
-          <span>{t.logoutWipeBtn}</span>
-        </button>
+      {/* Footer Lock & Logout Actions */}
+      <div className="p-3 border-t border-white/[0.08] space-y-2">
+        {!isSampleMode && persistenceMode === 'vault' && onLockSession && (
+          <button
+            type="button"
+            onClick={onLockSession}
+            className="w-full flex items-center justify-center gap-2 rounded-lg border border-[#2AABEE]/30 bg-[#2AABEE]/10 px-3 py-2 text-xs font-medium text-[#5EC2F6] hover:bg-[#2AABEE]/20 transition-colors cursor-pointer"
+          >
+            <Lock className="w-3.5 h-3.5" />
+            <span>{t.lockVaultBtn}</span>
+          </button>
+        )}
+
+        {!confirmLogout ? (
+          <button
+            type="button"
+            onClick={() => (isSampleMode ? onLogout() : setConfirmLogout(true))}
+            className="w-full flex items-center justify-center gap-2 rounded-lg border border-white/[0.08] bg-[#0B0F14] px-3 py-2 text-xs font-medium text-[#EF4444] hover:bg-[#EF4444]/10 transition-colors cursor-pointer"
+          >
+            <LogOut className="w-3.5 h-3.5" />
+            <span>{t.logoutWipeBtn}</span>
+          </button>
+        ) : (
+          <div className="rounded-lg border border-[#EF4444]/35 bg-[#EF4444]/10 p-2.5 space-y-2">
+            <p className="text-[11px] text-[#FCA5A5] leading-relaxed">{t.confirmLogoutWipe}</p>
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => setConfirmLogout(false)}
+                className="flex-1 rounded-md border border-white/10 py-1 text-[11px] text-[#F0F4F8] hover:bg-white/10 cursor-pointer"
+              >
+                {t.cancelActionBtn}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setConfirmLogout(false);
+                  onLogout();
+                }}
+                className="flex-1 rounded-md bg-[#EF4444] py-1 text-[11px] font-semibold text-white hover:bg-[#DC2626] cursor-pointer"
+              >
+                {t.confirmActionBtn}
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

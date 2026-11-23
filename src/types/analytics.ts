@@ -1,6 +1,7 @@
 export type LanguageCode = 'fa' | 'en';
 
 export type NetworkMode = 'direct' | 'socks5-bridge' | 'cf-relay';
+export type TimezoneMode = 'iran' | 'local' | 'utc';
 
 export interface Socks5BridgeConfig {
   bridgeUrl: string;
@@ -8,12 +9,14 @@ export interface Socks5BridgeConfig {
   port: number;
   username: string;
   password: string;
+  bridgeToken?: string;
 }
 
 export interface NetworkConfig {
   mode: NetworkMode;
   socks5: Socks5BridgeConfig;
   cfRelayUrl: string;
+  cfRelayToken?: string;
 }
 
 export interface ApiCredentials {
@@ -261,7 +264,7 @@ export interface ChannelAnalyticsBundle {
 }
 
 export type PostFilterMode = 'all' | 'has_shares' | 'evergreen' | 'albums' | 'older_than_7d';
-export type PostSortBy = 'date_desc' | 'shares_desc' | 'delta_desc' | 'share_rate_desc' | 'views_desc';
+export type PostSortBy = 'date_desc' | 'shares_desc' | 'delta_desc' | 'share_rate_desc' | 'views_desc' | 'evergreen_desc' | 'reactions_desc';
 
 export interface AttributedPostContribution {
   post: PostRecord;

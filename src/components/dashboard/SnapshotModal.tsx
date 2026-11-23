@@ -52,6 +52,7 @@ export const SnapshotModal: React.FC<SnapshotModalProps> = ({
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [vaultPinInput, setVaultPinInput] = useState('');
   const [savingVault, setSavingVault] = useState(false);
+  const [confirmWipe, setConfirmWipe] = useState(false);
 
   useDialogAccessibility(open && Boolean(bundle), dialogRef);
 
@@ -89,8 +90,21 @@ export const SnapshotModal: React.FC<SnapshotModalProps> = ({
     try {
       const text = await file.text();
       const parsed = JSON.parse(text) as ChannelSnapshot;
-      if (!parsed || typeof parsed.channelId !== 'number' || !parsed.posts) {
+      if (
+        !parsed ||
+        typeof parsed.channelId !== 'number' ||
+        typeof parsed.posts !== 'object' ||
+        parsed.posts === null ||
+        Array.isArray(parsed.posts)
+      ) {
         throw new Error('Invalid snapshot JSON structure');
+      }
+      if (parsed.channelId !== bundle.channel.id) {
+        throw new Error(
+          lang === 'fa'
+            ? `این اسنپ‌شات متعلق به کانال #${parsed.channelId} است و با کانال فعلی مطابقت ندارد.`
+            : `Snapshot belongs to channel #${parsed.channelId}, which does not match current channel #${bundle.channel.id}.`,
+        );
       }
       await onImportSnapshot(parsed);
       setErrorMsg(null);
@@ -138,26 +152,26 @@ export const SnapshotModal: React.FC<SnapshotModalProps> = ({
         className="relative z-10 w-full max-w-lg tg-sheet-glass rounded-2xl overflow-hidden focus:outline-none"
       >
         <div className="flex items-center justify-between px-5 py-3.5 border-b border-white/[0.08]">
-          <h2 id="snapshot-modal-title" className="text-sm font-semibold text-[#f5f7fa]">
+          <h2 id="snapshot-modal-title" className="text-sm font-semibold text-[#F0F4F8]">
             {t.snapshotModalTitle}
           </h2>
           <button
             type="button"
             onClick={onClose}
             aria-label={t.closeBtn}
-            className="rounded-lg p-1.5 text-[#7f91a4] hover:bg-white/10 hover:text-[#f5f7fa] cursor-pointer"
+            className="rounded-lg p-1.5 text-[#8B9BB0] hover:bg-white/10 hover:text-[#F0F4F8] cursor-pointer"
           >
             <X className="w-4 h-4" />
           </button>
         </div>
 
         <div className="p-5 space-y-4 max-h-[80vh] overflow-y-auto">
-          <p className="text-xs leading-relaxed text-[#7f91a4]">{t.snapshotModalDesc}</p>
+          <p className="text-xs leading-relaxed text-[#8B9BB0]">{t.snapshotModalDesc}</p>
 
           {bundle.lastSnapshotAt && (
             <div className="text-xs text-[#8B9BB0] font-mono-num pb-2 border-b border-white/[0.06]">
               {t.lastBaselineLabel}:{' '}
-              <span dir="ltr" className="text-[#f5f7fa]">
+              <span dir="ltr" className="text-[#F0F4F8]">
                 {new Date(bundle.lastSnapshotAt).toLocaleString(lang === 'fa' ? 'fa-IR' : 'en-US', {
                   timeZone: 'UTC',
                 })}{' '}
@@ -176,7 +190,7 @@ export const SnapshotModal: React.FC<SnapshotModalProps> = ({
                   lang === 'fa' ? 'اسنپ‌شات جدید در مرورگر ثبت شد.' : 'Snapshot saved locally.',
                 );
               }}
-              className="flex items-center justify-center gap-2 rounded-lg bg-[#3390ec] px-3.5 py-2 text-xs font-semibold text-white hover:bg-[#2a80d6] cursor-pointer"
+              className="flex items-center justify-center gap-2 rounded-lg bg-[#2AABEE] px-3.5 py-2 text-xs font-semibold text-white hover:bg-[#3CB7F5] cursor-pointer"
             >
               <Camera className="w-3.5 h-3.5" />
               <span>{t.takeSnapshotBtn}</span>
@@ -185,27 +199,27 @@ export const SnapshotModal: React.FC<SnapshotModalProps> = ({
             <button
               type="button"
               onClick={handleDownloadJson}
-              className="flex items-center justify-center gap-2 rounded-lg border border-white/10 bg-[#111923] px-3.5 py-2 text-xs font-medium text-[#f5f7fa] hover:bg-[#1e2c3a] cursor-pointer"
+              className="flex items-center justify-center gap-2 rounded-lg border border-white/10 bg-[#0B0F14] px-3.5 py-2 text-xs font-medium text-[#F0F4F8] hover:bg-[#171D26] cursor-pointer"
             >
-              <Download className="w-3.5 h-3.5 text-[#5eb5f7]" />
+              <Download className="w-3.5 h-3.5 text-[#5EC2F6]" />
               <span>{t.downloadSnapshotJson}</span>
             </button>
 
             <button
               type="button"
               onClick={() => fileInputRef.current?.click()}
-              className="flex items-center justify-center gap-2 rounded-lg border border-white/10 bg-[#111923] px-3.5 py-2 text-xs font-medium text-[#f5f7fa] hover:bg-[#1e2c3a] cursor-pointer"
+              className="flex items-center justify-center gap-2 rounded-lg border border-white/10 bg-[#0B0F14] px-3.5 py-2 text-xs font-medium text-[#F0F4F8] hover:bg-[#171D26] cursor-pointer"
             >
-              <Upload className="w-3.5 h-3.5 text-[#4dcd5e]" />
+              <Upload className="w-3.5 h-3.5 text-[#22C55E]" />
               <span>{t.importSnapshotJson}</span>
             </button>
 
             <button
               type="button"
               onClick={handleExportCsv}
-              className="flex items-center justify-center gap-2 rounded-lg border border-white/10 bg-[#111923] px-3.5 py-2 text-xs font-medium text-[#f5f7fa] hover:bg-[#1e2c3a] cursor-pointer"
+              className="flex items-center justify-center gap-2 rounded-lg border border-white/10 bg-[#0B0F14] px-3.5 py-2 text-xs font-medium text-[#F0F4F8] hover:bg-[#171D26] cursor-pointer"
             >
-              <FileSpreadsheet className="w-3.5 h-3.5 text-[#f5a623]" />
+              <FileSpreadsheet className="w-3.5 h-3.5 text-[#F59E0B]" />
               <span>{t.exportCsvBtn}</span>
             </button>
           </div>
@@ -224,7 +238,7 @@ export const SnapshotModal: React.FC<SnapshotModalProps> = ({
               onSubmit={handleSaveVault}
               className="pt-3.5 border-t border-white/[0.08] space-y-2.5"
             >
-              <div className="flex items-center gap-2 text-xs font-semibold text-[#5eb5f7]">
+              <div className="flex items-center gap-2 text-xs font-semibold text-[#5EC2F6]">
                 <Lock className="w-3.5 h-3.5" />
                 <span>{t.saveVaultPostLoginBtn}</span>
               </div>
@@ -244,7 +258,7 @@ export const SnapshotModal: React.FC<SnapshotModalProps> = ({
                 <button
                   type="submit"
                   disabled={savingVault}
-                  className="rounded-lg bg-[#3390ec] px-4 py-2 text-xs font-semibold text-white hover:bg-[#2a80d6] disabled:opacity-60 whitespace-nowrap shrink-0 cursor-pointer"
+                  className="rounded-lg bg-[#2AABEE] px-4 py-2 text-xs font-semibold text-white hover:bg-[#3CB7F5] disabled:opacity-60 whitespace-nowrap shrink-0 cursor-pointer"
                 >
                   {savingVault ? '...' : lang === 'fa' ? 'ذخیره در گاوصندوق' : 'Lock & Save'}
                 </button>
@@ -256,32 +270,55 @@ export const SnapshotModal: React.FC<SnapshotModalProps> = ({
           )}
 
           {statusMsg && (
-            <div className="rounded-lg border border-[#4dcd5e]/35 bg-[#4dcd5e]/10 px-3 py-2 text-xs text-[#4dcd5e]">
+            <div className="rounded-lg border border-[#22C55E]/35 bg-[#22C55E]/10 px-3 py-2 text-xs text-[#22C55E]">
               {statusMsg}
             </div>
           )}
 
           {errorMsg && (
-            <div className="rounded-lg border border-[#e55353]/35 bg-[#e55353]/10 px-3 py-2 text-xs text-[#fca5a5]">
+            <div className="rounded-lg border border-[#EF4444]/35 bg-[#EF4444]/10 px-3 py-2 text-xs text-[#fca5a5]">
               {errorMsg}
             </div>
           )}
 
           <div className="pt-3 border-t border-white/[0.08]">
-            <button
-              type="button"
-              onClick={async () => {
-                await onWipeVault();
-                setErrorMsg(null);
-                setStatusMsg(
-                  lang === 'fa' ? 'کل داده‌های مرورگر پاکسازی شد.' : 'All browser vault data wiped.',
-                );
-              }}
-              className="inline-flex items-center gap-1.5 text-xs text-[#e55353] hover:underline cursor-pointer"
-            >
-              <Trash2 className="w-3.5 h-3.5" />
-              <span>{t.wipeVaultBtn}</span>
-            </button>
+            {!confirmWipe ? (
+              <button
+                type="button"
+                onClick={() => setConfirmWipe(true)}
+                className="inline-flex items-center gap-1.5 text-xs text-[#EF4444] hover:underline cursor-pointer"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>{t.wipeVaultBtn}</span>
+              </button>
+            ) : (
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[#EF4444]/35 bg-[#EF4444]/10 p-2.5">
+                <span className="text-xs text-[#FCA5A5]">{t.confirmLogoutWipe}</span>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setConfirmWipe(false)}
+                    className="rounded-md border border-white/10 px-2.5 py-1 text-[11px] text-[#F0F4F8] hover:bg-white/10 cursor-pointer"
+                  >
+                    {t.cancelActionBtn}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      await onWipeVault();
+                      setConfirmWipe(false);
+                      setErrorMsg(null);
+                      setStatusMsg(
+                        lang === 'fa' ? 'کل داده‌های مرورگر پاکسازی شد.' : 'All browser vault data wiped.',
+                      );
+                    }}
+                    className="rounded-md bg-[#EF4444] px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-[#DC2626] cursor-pointer"
+                  >
+                    {t.confirmActionBtn}
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </div>

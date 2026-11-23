@@ -114,6 +114,8 @@ export const ShareDetectiveTab: React.FC<ShareDetectiveTabProps> = React.memo(({
               <option value="shares_desc">{t.sortShares}</option>
               <option value="share_rate_desc">{t.sortRate}</option>
               <option value="views_desc">{t.sortViews}</option>
+              <option value="evergreen_desc">{t.sortEvergreen}</option>
+              <option value="reactions_desc">{t.sortReactions}</option>
               <option value="delta_desc">{t.sortDelta}</option>
               <option value="date_desc">{t.sortDate}</option>
             </select>
@@ -233,14 +235,26 @@ export const ShareDetectiveTab: React.FC<ShareDetectiveTabProps> = React.memo(({
             <div className="overflow-x-auto">
               <table className="w-full text-start border-collapse">
                 <thead>
-                  <tr className="border-b border-white/[0.06] bg-[#111923]/60 text-[11px] font-semibold text-[#7f91a4]">
+                  <tr className="border-b border-white/[0.06] bg-[#0B0F14]/80 text-[11px] font-semibold text-[#8B9BB0]">
                     <th className="py-2.5 px-4 text-start">{t.colPost}</th>
-                    <th className="py-2.5 px-3 text-start whitespace-nowrap">{t.colDate}</th>
-                    <th className="py-2.5 px-3 text-end whitespace-nowrap">{t.colViews}</th>
-                    <th className="py-2.5 px-3 text-end whitespace-nowrap">{t.colShares}</th>
-                    <th className="py-2.5 px-3 text-end whitespace-nowrap">{t.colEvergreen}</th>
-                    <th className="py-2.5 px-3 text-end whitespace-nowrap">{t.colRate}</th>
-                    <th className="py-2.5 px-4 text-end whitespace-nowrap">{t.colReactions}</th>
+                    <th className="py-2.5 px-3 text-start whitespace-nowrap">
+                      <button type="button" onClick={() => setSortBy('date_desc')} className={`hover:text-[#F0F4F8] cursor-pointer ${sortBy === 'date_desc' ? 'text-[#5EC2F6]' : ''}`}>{t.colDate}</button>
+                    </th>
+                    <th className="py-2.5 px-3 text-end whitespace-nowrap">
+                      <button type="button" onClick={() => setSortBy('views_desc')} className={`hover:text-[#F0F4F8] cursor-pointer ${sortBy === 'views_desc' ? 'text-[#5EC2F6]' : ''}`}>{t.colViews}</button>
+                    </th>
+                    <th className="py-2.5 px-3 text-end whitespace-nowrap">
+                      <button type="button" onClick={() => setSortBy('shares_desc')} className={`hover:text-[#F0F4F8] cursor-pointer ${sortBy === 'shares_desc' ? 'text-[#5EC2F6]' : ''}`}>{t.colShares}</button>
+                    </th>
+                    <th className="py-2.5 px-3 text-end whitespace-nowrap">
+                      <button type="button" onClick={() => setSortBy('evergreen_desc')} className={`hover:text-[#F0F4F8] cursor-pointer ${sortBy === 'evergreen_desc' ? 'text-[#5EC2F6]' : ''}`}>{t.colEvergreen}</button>
+                    </th>
+                    <th className="py-2.5 px-3 text-end whitespace-nowrap">
+                      <button type="button" onClick={() => setSortBy('share_rate_desc')} className={`hover:text-[#F0F4F8] cursor-pointer ${sortBy === 'share_rate_desc' ? 'text-[#5EC2F6]' : ''}`}>{t.colRate}</button>
+                    </th>
+                    <th className="py-2.5 px-4 text-end whitespace-nowrap">
+                      <button type="button" onClick={() => setSortBy('reactions_desc')} className={`hover:text-[#F0F4F8] cursor-pointer ${sortBy === 'reactions_desc' ? 'text-[#5EC2F6]' : ''}`}>{t.colReactions}</button>
+                    </th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-white/[0.06]">

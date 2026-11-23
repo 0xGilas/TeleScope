@@ -14,6 +14,7 @@ import type {
   PostRecord,
   PostDetailedStats,
   SessionPersistenceMode,
+  TimezoneMode,
 } from './types/analytics';
 import { getTranslations } from './i18n/translations';
 import {
@@ -71,8 +72,10 @@ const DEFAULT_NETWORK: NetworkConfig = {
     port: 1080,
     username: '',
     password: '',
+    bridgeToken: '',
   },
   cfRelayUrl: '',
+  cfRelayToken: '',
 };
 
 const ENV_API_ID = Number(import.meta.env?.VITE_TELEGRAM_API_ID) || 0;
@@ -150,7 +153,25 @@ function pickDefaultDateKey(graph?: ParsedStatsGraph): string | null {
 }
 
 export function App() {
-  const [lang, setLang] = useState<LanguageCode>('fa');
+  const [lang, setLang] = useState<LanguageCode>(() => {
+    try {
+      const saved = localStorage.getItem('telescope_lang_v1');
+      if (saved === 'en' || saved === 'fa') return saved;
+    } catch {
+      // ignore
+    }
+    return 'fa';
+  });
+  const [timezoneMode, setTimezoneMode] = useState<TimezoneMode>(() => {
+    try {
+      const saved = localStorage.getItem('telescope_tz_v1');
+      if (saved === 'iran' || saved === 'local' || saved === 'utc') return saved;
+    } catch {
+      // ignore
+    }
+    return 'iran';
+  });
+  const [scanDepth, setScanDepth] = useState<number>(400);
   const t = getTranslations(lang);
 
   // Network & API config
@@ -191,6 +212,7 @@ export function App() {
   const [authStep, setAuthStep] = useState<AuthStep>('idle');
   const [authError, setAuthError] = useState<string | null>(null);
   const [qrUrl, setQrUrl] = useState<string | null>(null);
+  const [qrExpiresAt, setQrExpiresAt] = useState<number | null>(null);
   const [phoneState, setPhoneState] = useState<{ phone: string; phoneCodeHash: string }>({
     phone: '',
     phoneCodeHash: '',
@@ -220,13 +242,27 @@ export function App() {
   mediaPreviewsRef.current = mediaPreviewsByPost;
   const [loadingMediaPreview, setLoadingMediaPreview] = useState(false);
   const [liveError, setLiveError] = useState<string | null>(null);
+  const [floodWaitSec, setFloodWaitSec] = useState<number | null>(null);
   const [, startTransition] = useTransition();
 
   // Sync HTML dir/lang attributes
   useEffect(() => {
     document.documentElement.dir = lang === 'fa' ? 'rtl' : 'ltr';
     document.documentElement.lang = lang;
+    try {
+      localStorage.setItem('telescope_lang_v1', lang);
+    } catch {
+      // ignore
+    }
   }, [lang]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('telescope_tz_v1', timezoneMode);
+    } catch {
+      // ignore
+    }
+  }, [timezoneMode]);
 
   // Escape key closes modals/drawers cleanly
   useEffect(() => {
@@ -307,12 +343,12 @@ export function App() {
     }
   }, []);
 
-  const loadLiveChannelBundle = useCallback(async (channelId: number) => {
+  const loadLiveChannelBundle = useCallback(async (channelId: number, maxMessages = 400) => {
     setSyncingChannel(true);
     setScanProgressCount(0);
     setLiveError(null);
     try {
-      const res = await telegramBridge.fetchChannelAnalytics(channelId, 400);
+      const res = await telegramBridge.fetchChannelAnalytics(channelId, maxMessages);
       const recentSet = new Set(res.overview.recentPostIds);
       const grouped = groupAlbumPosts(res.rawMessages, recentSet);
 
@@ -415,7 +451,7 @@ export function App() {
         setChannels(chList);
         if (chList.length > 0) {
           setActiveChannelId(chList[0].id);
-          await loadLiveChannelBundle(chList[0].id);
+          await loadLiveChannelBundle(chList[0].id, scanDepth);
         }
       } catch (err) {
         setLiveError(err instanceof Error ? err.message : 'Failed to load channels');
@@ -427,8 +463,9 @@ export function App() {
   // Wire worker event listeners
   useEffect(() => {
     telegramBridge.setListeners({
-      onQrUpdated: (url) => {
+      onQrUpdated: (url, expiresAt) => {
         setQrUrl(url);
+        setQrExpiresAt(expiresAt);
         setAuthStep('qr_ready');
       },
       onQrScanned: () => {
@@ -445,6 +482,9 @@ export function App() {
       },
       onAttributionProgress: (_chId, completed, total) => {
         setAttributionProgress({ completed, total });
+      },
+      onAttributionFloodWait: (_chId, waitSec) => {
+        setFloodWaitSec(waitSec);
       },
       onChannelAvatarsUpdated: (avatars) => {
         setChannels((prev) =>
@@ -691,6 +731,27 @@ export function App() {
     setSavedSessionMeta({ exists: false, hasPin: false });
   }, []);
 
+  const handleLockSession = useCallback(async () => {
+    if (!isSampleMode) {
+      // Terminate worker/RAM session without calling Telegram logOut or wiping the encrypted vault
+      telegramBridge.terminateOnly();
+    }
+    setVaultPin('');
+    setChannels([]);
+    setBundlesByChannel({});
+    setMediaPreviewsByPost({});
+    setLoadingMediaPreview(false);
+    setPostDetailsError(null);
+    setActiveChannelId(null);
+    setSelectedPostKey(null);
+    setSelectedDateKey(null);
+    setQrUrl(null);
+    setQrExpiresAt(null);
+    setFloodWaitSec(null);
+    setAuthStep('idle');
+    setAuthError(null);
+  }, [isSampleMode]);
+
   const handleLogout = useCallback(async () => {
     if (!isSampleMode) {
       await telegramBridge.logoutAndTerminate();
@@ -791,7 +852,7 @@ export function App() {
         }
       });
       if (!bundlesByChannel[channelId] && !isSampleMode) {
-        await loadLiveChannelBundle(channelId);
+        await loadLiveChannelBundle(channelId, scanDepth);
       }
     },
     [bundlesByChannel, isSampleMode, loadLiveChannelBundle],
@@ -864,6 +925,7 @@ export function App() {
     if (!activeBundle || isSampleMode || scanningAttribution) return;
     setScanningAttribution(true);
     setAttributionProgress(null);
+    setFloodWaitSec(null);
     setLiveError(null);
     try {
       const selectedTs = selectedDateKey
@@ -1042,7 +1104,9 @@ export function App() {
           onChangeApiCreds={(next) => {
             setApiCreds(next);
             apiCredsRef.current = next;
-            saveApiCredentials(next).catch(() => {});
+            if (!(persistenceRef.current.mode === 'vault' && persistenceRef.current.pin.trim().length > 0)) {
+              saveApiCredentials(next).catch(() => {});
+            }
           }}
           persistenceMode={persistenceMode}
           vaultPin={vaultPin}
@@ -1058,6 +1122,7 @@ export function App() {
           authError={authError}
           forceShowApiBox={forceShowApiBox}
           qrUrl={qrUrl}
+          qrExpiresAt={qrExpiresAt}
           onStartQr={handleStartQr}
           onSendCode={handleSendCode}
           onVerifyCode={handleVerifyCode}
@@ -1066,6 +1131,7 @@ export function App() {
             setAuthStep('idle');
             setAuthError(null);
             setQrUrl(null);
+            setQrExpiresAt(null);
             telegramBridge.abortQr().catch(() => {});
           }}
           onEnterSampleMode={enterSampleMode}
@@ -1101,6 +1167,7 @@ export function App() {
         persistenceMode={persistenceMode}
         onToggleLang={() => setLang((l) => (l === 'fa' ? 'en' : 'fa'))}
         onOpenVaultModal={() => setSnapshotModalOpen(true)}
+        onLockSession={handleLockSession}
         onLogout={handleLogout}
         mobileOpen={mobileSidebarOpen}
         onCloseMobile={() => setMobileSidebarOpen(false)}
@@ -1167,15 +1234,28 @@ export function App() {
               </button>
 
               {!isSampleMode && activeBundle && (
-                <button
-                  type="button"
-                  disabled={syncingChannel}
-                  onClick={() => loadLiveChannelBundle(activeBundle.channel.id)}
-                  className="inline-flex items-center gap-1.5 rounded-lg bg-[#2AABEE] px-3 py-1.5 text-xs font-semibold text-[#090C10] hover:bg-[#3CB7F5] disabled:opacity-60 whitespace-nowrap shrink-0 cursor-pointer"
-                >
-                  <RefreshCw className={`w-3.5 h-3.5 ${syncingChannel ? 'animate-spin' : ''}`} />
-                  <span>{syncingChannel ? `${t.syncingText} (${scanProgressCount})` : t.syncNowBtn}</span>
-                </button>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <select
+                    value={scanDepth}
+                    onChange={(e) => setScanDepth(Number(e.target.value) || 400)}
+                    disabled={syncingChannel}
+                    aria-label={t.scanDepthLabel}
+                    className="hidden sm:block rounded-lg border border-white/12 bg-[#11161D]/90 px-2 py-1.5 text-xs font-mono-num text-[#F0F4F8] focus:border-[#2AABEE] focus:outline-none cursor-pointer"
+                  >
+                    <option value={400}>400</option>
+                    <option value={1000}>1000</option>
+                    <option value={2500}>2500</option>
+                  </select>
+                  <button
+                    type="button"
+                    disabled={syncingChannel}
+                    onClick={() => loadLiveChannelBundle(activeBundle.channel.id, scanDepth)}
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-[#2AABEE] px-3 py-1.5 text-xs font-semibold text-[#090C10] hover:bg-[#3CB7F5] disabled:opacity-60 whitespace-nowrap shrink-0 cursor-pointer"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${syncingChannel ? 'animate-spin' : ''}`} />
+                    <span>{syncingChannel ? `${t.syncingText} (${scanProgressCount})` : t.syncNowBtn}</span>
+                  </button>
+                </div>
               )}
             </div>
           </div>
@@ -1285,6 +1365,7 @@ export function App() {
                   selectedDateKey={selectedDateKey}
                   scanningAttribution={scanningAttribution}
                   attributionProgress={attributionProgress}
+                  floodWaitSec={floodWaitSec}
                   onScanAttribution={handleScanDateAttribution}
                   onAbortAttribution={handleAbortAttribution}
                   onSelectDate={handleSelectDate}
@@ -1302,7 +1383,12 @@ export function App() {
                 )}
 
                 {activeTab === 'audience' && (
-                  <AudienceTab lang={lang} bundle={activeBundle} />
+                  <AudienceTab
+                    lang={lang}
+                    bundle={activeBundle}
+                    timezoneMode={timezoneMode}
+                    onChangeTimezoneMode={setTimezoneMode}
+                  />
                 )}
               </Suspense>
             </>

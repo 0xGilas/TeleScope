@@ -302,7 +302,8 @@ export async function decryptVaultPayload(
 
     failedPinAttempts += 1;
     if (failedPinAttempts >= 5) {
-      pinLockoutUntil = Date.now() + 30_000;
+      const penaltySec = Math.min(900, 30 * Math.pow(2, failedPinAttempts - 5));
+      pinLockoutUntil = Date.now() + penaltySec * 1000;
     }
     persistLockoutToStorage();
     throw new VaultError('WRONG_PIN', 'WRONG_PIN');
@@ -531,10 +532,12 @@ export async function clearSavedSession(): Promise<void> {
 export function sanitizeNetworkForUnencryptedStorage(config: NetworkConfig): NetworkConfig {
   return {
     ...config,
+    cfRelayToken: '',
     socks5: {
       ...config.socks5,
-      // Never persist SOCKS5 password in plaintext storage; it is only stored encrypted inside the PIN-protected vault bundle.
+      // Never persist secrets in plaintext storage; they are only stored encrypted inside the PIN-protected vault bundle.
       password: '',
+      bridgeToken: '',
     },
   };
 }

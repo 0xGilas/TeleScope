@@ -30,6 +30,7 @@ interface OverviewTabProps {
   selectedDateKey: string | null;
   scanningAttribution: boolean;
   attributionProgress: { completed: number; total: number } | null;
+  floodWaitSec?: number | null;
   onScanAttribution: () => void;
   onAbortAttribution?: () => void;
   onSelectDate: (dateKey: string) => void;
@@ -55,6 +56,7 @@ export const OverviewTab: React.FC<OverviewTabProps> = React.memo(({
   selectedDateKey,
   scanningAttribution,
   attributionProgress,
+  floodWaitSec = null,
   onScanAttribution,
   onAbortAttribution,
   onSelectDate,
@@ -183,7 +185,7 @@ export const OverviewTab: React.FC<OverviewTabProps> = React.memo(({
         </div>
 
         {/* Primary KPI Row */}
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 divide-y sm:divide-y-0 sm:divide-x divide-white/[0.06]">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 divide-y sm:divide-y-0 sm:divide-x rtl:divide-x-reverse divide-white/[0.06]">
           {kpis.map((kpi) => (
             <div key={kpi.label} className="px-5 py-3.5">
               <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
@@ -205,7 +207,7 @@ export const OverviewTab: React.FC<OverviewTabProps> = React.memo(({
         </div>
 
         {/* Benchmarks & Public/Private Split Sub-Bar */}
-        <div className="border-t border-white/[0.07] bg-[#0B0F14]/65 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 divide-y sm:divide-y-0 sm:divide-x divide-white/[0.06]">
+        <div className="border-t border-white/[0.07] bg-[#0B0F14]/65 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 divide-y sm:divide-y-0 sm:divide-x rtl:divide-x-reverse divide-white/[0.06]">
           <div className="px-5 py-3 flex items-baseline justify-between gap-2">
             <span className="text-xs text-[#7f91a4]">{t.benchMedianViews}</span>
             <span dir="ltr" className="text-xs font-semibold font-mono-num text-[#f5f7fa]">
@@ -342,6 +344,18 @@ export const OverviewTab: React.FC<OverviewTabProps> = React.memo(({
             </div>
           )}
 
+          {floodWaitSec !== null && floodWaitSec > 0 && (
+            <div
+              role="status"
+              className="px-5 py-2.5 border-b border-[#F59E0B]/30 bg-[#F59E0B]/10 text-xs text-[#FCD34D] flex items-center justify-between gap-2"
+            >
+              <span>{t.floodWaitBanner}</span>
+              <span dir="ltr" className="font-mono-num font-semibold shrink-0">
+                ~{floodWaitSec}s
+              </span>
+            </div>
+          )}
+
           <div className="px-5 py-4 flex flex-wrap items-center justify-between gap-3">
             <div className="space-y-0.5">
               <h3 className="text-[13px] font-semibold text-[#5EC2F6]">
@@ -377,7 +391,7 @@ export const OverviewTab: React.FC<OverviewTabProps> = React.memo(({
           </div>
 
           {/* 3-Column Date Reconciliation Strip (Hairline-divided, zero nested cards) */}
-          <div className="border-y border-white/[0.07] bg-[#0B0F14]/60 grid grid-cols-1 sm:grid-cols-3 divide-y sm:divide-y-0 sm:divide-x divide-white/[0.06]">
+          <div className="border-y border-white/[0.07] bg-[#0B0F14]/60 grid grid-cols-1 sm:grid-cols-3 divide-y sm:divide-y-0 sm:divide-x rtl:divide-x-reverse divide-white/[0.06]">
             <div className="px-5 py-3">
               <div className="text-[11px] text-[#8B9BB0]">{t.channelGraphLabel}</div>
               <div dir="ltr" className="mt-1 flex items-baseline gap-3 font-mono-num">

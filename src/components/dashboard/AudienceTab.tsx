@@ -1,10 +1,12 @@
 import React, { useMemo } from 'react';
-import type { ChannelAnalyticsBundle, LanguageCode } from '../../types/analytics';
+import type { ChannelAnalyticsBundle, LanguageCode, TimezoneMode } from '../../types/analytics';
 import { getTranslations } from '../../i18n/translations';
 import {
   computeFormatInsights,
   computeWeekdayHourMatrix,
   formatCompactNumber,
+  getTimezoneBadgeLabel,
+  getTimezoneOffsetMinutes,
 } from '../../utils/analyticsMath';
 import { HourlyBreakdownChart } from '../charts/HourlyBreakdownChart';
 import { TelegramTimeChart } from '../charts/TelegramTimeChart';
@@ -12,17 +14,29 @@ import { TelegramTimeChart } from '../charts/TelegramTimeChart';
 interface AudienceTabProps {
   lang: LanguageCode;
   bundle: ChannelAnalyticsBundle;
+  timezoneMode: TimezoneMode;
+  onChangeTimezoneMode: (mode: TimezoneMode) => void;
 }
 
 const WEEKDAYS_EN = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const WEEKDAYS_FA = ['یکشنبه', 'دوشنبه', 'سه‌شنبه', 'چهارشنبه', 'پنجشنبه', 'جمعه', 'شنبه'];
 const HOUR_SLOTS = ['00–04', '04–08', '08–12', '12–16', '16–20', '20–24'];
 
-export const AudienceTab: React.FC<AudienceTabProps> = React.memo(({ lang, bundle }) => {
+export const AudienceTab: React.FC<AudienceTabProps> = React.memo(({
+  lang,
+  bundle,
+  timezoneMode,
+  onChangeTimezoneMode,
+}) => {
   const t = getTranslations(lang);
   const { overview, posts } = bundle;
   const insights = useMemo(() => computeFormatInsights(posts), [posts]);
-  const matrix = useMemo(() => computeWeekdayHourMatrix(posts), [posts]);
+  const tzOffsetMinutes = useMemo(() => getTimezoneOffsetMinutes(timezoneMode), [timezoneMode]);
+  const tzLabel = useMemo(() => getTimezoneBadgeLabel(timezoneMode), [timezoneMode]);
+  const matrix = useMemo(
+    () => computeWeekdayHourMatrix(posts, tzOffsetMinutes),
+    [posts, tzOffsetMinutes],
+  );
 
   const maxShareRate = useMemo(
     () => Math.max(0.5, ...matrix.map((c) => c.avgShareRate)),
@@ -81,8 +95,45 @@ export const AudienceTab: React.FC<AudienceTabProps> = React.memo(({ lang, bundl
 
   return (
     <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-2 px-1">
+        <span className="text-xs text-[#8B9BB0]">
+          {lang === 'fa' ? 'منطقه زمانی نمایش ساعات:' : 'Display Timezone:'}
+        </span>
+        <div className="inline-flex items-center gap-1 rounded-lg bg-[#0B0F14] p-1 border border-white/[0.08]">
+          {(
+            [
+              { id: 'iran', label: t.tzIranLabel },
+              { id: 'local', label: t.tzLocalLabel },
+              { id: 'utc', label: t.tzUtcLabel },
+            ] as const
+          ).map((opt) => {
+            const active = timezoneMode === opt.id;
+            return (
+              <button
+                key={opt.id}
+                type="button"
+                onClick={() => onChangeTimezoneMode(opt.id)}
+                className={`rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors cursor-pointer ${
+                  active
+                    ? 'bg-[#2AABEE] text-[#090C10] font-semibold'
+                    : 'text-[#8B9BB0] hover:text-[#F0F4F8]'
+                }`}
+              >
+                {opt.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
       {overview.topHoursGraph && (
-        <HourlyBreakdownChart graph={overview.topHoursGraph} title={t.topHoursTitle} lang={lang} />
+        <HourlyBreakdownChart
+          graph={overview.topHoursGraph}
+          title={t.topHoursTitle}
+          lang={lang}
+          timezoneOffsetMinutes={tzOffsetMinutes}
+          timezoneLabel={tzLabel}
+        />
       )}
 
       {/* 7x6 Weekday x 4h Posting Performance Matrix */}
@@ -92,7 +143,7 @@ export const AudienceTab: React.FC<AudienceTabProps> = React.memo(({ lang, bundl
             <div className="flex flex-wrap items-center gap-2">
               <h3 className="text-[13px] font-semibold text-[#5eb5f7]">{t.heatmapTitle}</h3>
               <span className="text-[10px] font-medium text-[#8B9BB0] border border-white/10 bg-[#0B0F14]/80 rounded px-1.5 py-0.5">
-                {t.utcHintBadge}
+                {tzLabel}
               </span>
             </div>
             <p className="text-xs text-[#8B9BB0] mt-0.5">{t.heatmapSub}</p>
@@ -103,7 +154,7 @@ export const AudienceTab: React.FC<AudienceTabProps> = React.memo(({ lang, bundl
               <span className="font-semibold text-[#4dcd5e]">
                 {weekdayLabels[goldenCell.weekday]}{' '}
                 <span dir="ltr" className="font-mono-num">
-                  {HOUR_SLOTS[goldenCell.hourBlock]} UTC ({goldenCell.avgShareRate}%)
+                  {HOUR_SLOTS[goldenCell.hourBlock]} {tzLabel} ({goldenCell.avgShareRate}%)
                 </span>
               </span>
             </div>
@@ -144,8 +195,8 @@ export const AudienceTab: React.FC<AudienceTabProps> = React.memo(({ lang, bundl
                       key={`${weekday}-${hourBlock}`}
                       title={
                         count > 0
-                          ? `${dayLabel} ${slot} UTC: ${count} post(s), ${rate}% avg share rate, ${cell?.avgViews} avg views`
-                          : `${dayLabel} ${slot} UTC: no posts`
+                          ? `${dayLabel} ${slot} ${tzLabel}: ${count} post(s), ${rate}% avg share rate, ${cell?.avgViews} avg views`
+                          : `${dayLabel} ${slot} ${tzLabel}: no posts`
                       }
                       className={`h-11 rounded-lg border flex flex-col items-center justify-center font-mono-num transition-colors ${
                         isGolden

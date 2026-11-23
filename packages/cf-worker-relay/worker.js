@@ -1,11 +1,13 @@
 /**
- * TG Pulse — Personal Cloudflare Worker WebSocket Relay
+ * TeleScope — Personal Cloudflare Worker WebSocket Relay
  * Deploy to your own Cloudflare account (`wrangler deploy`) to relay encrypted MTProto
  * WebSocket traffic to official *.web.telegram.org endpoints without installing local software.
  *
- * Optional Wrangler secrets/vars for hardening:
- *   - RELAY_SECRET: shared token expected via `?token=<secret>` in your Cloudflare Relay URL
+ * Security (Fail-Closed by default):
+ *   Set at least one of RELAY_SECRET or ALLOWED_ORIGINS via `wrangler secret put` / `wrangler.toml`:
+ *   - RELAY_SECRET: shared token expected via `?token=<secret>` or `x-relay-token`
  *   - ALLOWED_ORIGINS: comma-separated list of allowed browser Origins (e.g. "https://you.github.io")
+ *   - ALLOW_PUBLIC_RELAY: set to "true" ONLY if you intentionally want an unauthenticated public relay
  */
 const TELEGRAM_HOST_REGEX = /^(?:[a-zA-Z0-9-]+\.)?web\.telegram\.org$/;
 
@@ -22,13 +24,23 @@ export default {
   async fetch(request, env = {}) {
     const upgradeHeader = request.headers.get('Upgrade');
     if (!upgradeHeader || upgradeHeader.toLowerCase() !== 'websocket') {
-      return new Response('TG Pulse Relay Ready. Connect via WebSocket with ?target=wss://...', {
+      return new Response('TeleScope Relay Ready. Connect via WebSocket with ?target=wss://...', {
         status: 200,
       });
     }
 
-    const allowedOriginsRaw = typeof env.ALLOWED_ORIGINS === 'string' ? env.ALLOWED_ORIGINS : '';
-    if (allowedOriginsRaw.trim().length > 0) {
+    const allowedOriginsRaw = typeof env.ALLOWED_ORIGINS === 'string' ? env.ALLOWED_ORIGINS.trim() : '';
+    const relaySecret = typeof env.RELAY_SECRET === 'string' ? env.RELAY_SECRET.trim() : '';
+    const allowPublic = env.ALLOW_PUBLIC_RELAY === 'true';
+
+    if (!allowedOriginsRaw && !relaySecret && !allowPublic) {
+      return new Response(
+        'Relay misconfigured: configure RELAY_SECRET and/or ALLOWED_ORIGINS before using.',
+        { status: 403 },
+      );
+    }
+
+    if (allowedOriginsRaw.length > 0) {
       const origin = request.headers.get('Origin') || '';
       const allowlist = allowedOriginsRaw
         .split(',')
@@ -40,7 +52,6 @@ export default {
     }
 
     const url = new URL(request.url);
-    const relaySecret = typeof env.RELAY_SECRET === 'string' ? env.RELAY_SECRET.trim() : '';
     if (relaySecret.length > 0) {
       const token = url.searchParams.get('token') || request.headers.get('x-relay-token') || '';
       if (!constantTimeEqual(token, relaySecret)) {

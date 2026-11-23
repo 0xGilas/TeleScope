@@ -24,6 +24,7 @@ export interface BridgeListeners {
   onAttributionProgress?: (channelId: number, completed: number, total: number) => void;
   onChannelAvatarsUpdated?: (avatars: Record<number, string>) => void;
   onLiveForwardsUpdate?: (channelId: number, msgId: number, forwards: number) => void;
+  onAttributionFloodWait?: (channelId: number, waitSec: number) => void;
 }
 
 class TelegramWorkerBridge {
@@ -108,6 +109,9 @@ class TelegramWorkerBridge {
       if (msg.type === 'live_forwards_update') {
         this.listeners.onLiveForwardsUpdate?.(msg.channelId, msg.msgId, msg.forwards);
       }
+      if (msg.type === 'attribution_flood_wait') {
+        this.listeners.onAttributionFloodWait?.(msg.channelId, msg.waitSec);
+      }
     };
 
     worker.onerror = (err) => {
@@ -172,6 +176,18 @@ class TelegramWorkerBridge {
 
   exportSession() {
     return this.invoke<{ sessionString: string }>({ type: 'export_session' });
+  }
+
+  terminateOnly() {
+    if (this.pendingAttributionTimer) {
+      clearTimeout(this.pendingAttributionTimer);
+      this.pendingAttributionTimer = null;
+    }
+    if (this.worker) {
+      this.worker.terminate();
+      this.worker = null;
+      this.pending.clear();
+    }
   }
 
   async logoutAndTerminate() {
@@ -252,7 +268,7 @@ export const telegramBridge = new TelegramWorkerBridge();
 /**
  * Tests local SOCKS5 bridge reachability over ws://127.0.0.1:8787 (without touching Telegram yet)
  */
-export function testBridgeReachability(bridgeUrl: string): Promise<{ ok: boolean; message: string }> {
+export function testBridgeReachability(bridgeUrl: string, bridgeToken?: string): Promise<{ ok: boolean; message: string }> {
   return new Promise((resolve) => {
     let settled = false;
     const timer = setTimeout(() => {
@@ -265,7 +281,7 @@ export function testBridgeReachability(bridgeUrl: string): Promise<{ ok: boolean
     try {
       const ws = new WebSocket(bridgeUrl);
       ws.onopen = () => {
-        ws.send(JSON.stringify({ type: 'ping' }));
+        ws.send(JSON.stringify({ type: 'ping', token: bridgeToken?.trim() || undefined }));
       };
       ws.onmessage = (ev) => {
         if (settled) return;

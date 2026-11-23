@@ -43,6 +43,7 @@ interface AuthScreenProps {
   authError: string | null;
   forceShowApiBox?: boolean;
   qrUrl: string | null;
+  qrExpiresAt?: number | null;
   onStartQr: () => Promise<void>;
   onSendCode: (phone: string) => Promise<void>;
   onVerifyCode: (code: string) => Promise<void>;
@@ -102,6 +103,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = React.memo(({
   authError,
   forceShowApiBox = false,
   qrUrl,
+  qrExpiresAt = null,
   onStartQr,
   onSendCode,
   onVerifyCode,
@@ -119,6 +121,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = React.memo(({
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [previewDayIdx, setPreviewDayIdx] = useState(1);
+  const [qrSecondsLeft, setQrSecondsLeft] = useState<number | null>(null);
   const apiIdRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
@@ -127,6 +130,19 @@ export const AuthScreen: React.FC<AuthScreenProps> = React.memo(({
       setTimeout(() => apiIdRef.current?.focus(), 60);
     }
   }, [forceShowApiBox]);
+
+  useEffect(() => {
+    if (!qrExpiresAt || !qrUrl) {
+      setQrSecondsLeft(null);
+      return;
+    }
+    const updateLeft = () => {
+      setQrSecondsLeft(Math.max(0, Math.ceil((qrExpiresAt - Date.now()) / 1000)));
+    };
+    updateLeft();
+    const timer = setInterval(updateLeft, 1000);
+    return () => clearInterval(timer);
+  }, [qrExpiresAt, qrUrl]);
 
   useEffect(() => {
     if (!qrUrl) {
@@ -571,13 +587,30 @@ export const AuthScreen: React.FC<AuthScreenProps> = React.memo(({
                     ) : (
                       <div className="flex flex-col items-center text-center space-y-2.5">
                         {qrDataUrl ? (
-                          <div className="rounded-xl bg-white p-2">
-                            <img
-                              src={qrDataUrl}
-                              alt="Telegram Login QR Code"
-                              className="w-44 h-44 block"
-                              referrerPolicy="no-referrer"
-                            />
+                          <div className="space-y-2 flex flex-col items-center">
+                            <div className="rounded-xl bg-white p-2 relative">
+                              <img
+                                src={qrDataUrl}
+                                alt="Telegram Login QR Code"
+                                className={`w-44 h-44 block ${qrSecondsLeft === 0 ? 'opacity-30' : ''}`}
+                                referrerPolicy="no-referrer"
+                              />
+                            </div>
+                            <div className="flex items-center gap-2 text-[11px] font-mono-num">
+                              {qrSecondsLeft !== null && (
+                                <span className={qrSecondsLeft === 0 ? 'text-[#EF4444]' : 'text-[#8B9BB0]'}>
+                                  {qrSecondsLeft === 0 ? t.qrExpiredLabel : `${qrSecondsLeft}s`}
+                                </span>
+                              )}
+                              <button
+                                type="button"
+                                disabled={busy}
+                                onClick={() => handleAction(onStartQr)}
+                                className="text-[#5EC2F6] hover:underline cursor-pointer"
+                              >
+                                {t.refreshQrBtn}
+                              </button>
+                            </div>
                           </div>
                         ) : (
                           <div
@@ -717,6 +750,13 @@ export const AuthScreen: React.FC<AuthScreenProps> = React.memo(({
                           ) : (
                             t.verifyCodeBtn
                           )}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={onResetAuth}
+                          className="w-full text-center text-[11px] text-[#8B9BB0] hover:text-[#F0F4F8] hover:underline cursor-pointer"
+                        >
+                          {t.editPhoneBtn}
                         </button>
                       </form>
                     ) : (

@@ -598,10 +598,14 @@ export const TelegramTimeChart: React.FC<TelegramTimeChartProps> = React.memo(
             />
           </svg>
 
-          {/* Floating Tooltip (blur-free for 60fps pointer scrubbing) */}
+          {/* Floating Tooltip (flips side automatically so right-edge points & right Y-axis stay unobstructed) */}
           {activeHoverGlobalIdx !== null && (
             <div
-              className="pointer-events-none absolute top-2 right-2 tg-tooltip-glass rounded-xl px-3 py-2"
+              className={`pointer-events-none absolute top-2 tg-tooltip-glass rounded-xl px-3 py-2 transition-[left,right] duration-75 ${
+                hoverIdx !== null && hoverIdx >= Math.floor(visibleIndices.length / 2)
+                  ? 'left-12'
+                  : 'right-2'
+              }`}
               style={{ minWidth: 152 }}
             >
               <div className="text-[11px] font-medium text-[#8B9BB0] font-mono-num mb-1">
