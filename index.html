@@ -3,9 +3,10 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Set frame-ancestors 'none' via HTTP Content-Security-Policy response headers at the hosting/CDN layer (ignored in <meta> CSP). -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: blob:; font-src 'self' data: https://fonts.gstatic.com; connect-src 'self' wss://*.web.telegram.org ws://127.0.0.1:* ws://localhost:* wss://*.workers.dev; worker-src 'self' blob:; object-src 'none'; base-uri 'self';"
+      content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: blob:; font-src 'self' data: https://fonts.gstatic.com; connect-src 'self' wss://*.web.telegram.org ws://127.0.0.1:* ws://localhost:* wss://*.workers.dev; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self';"
     />
     <title>TeleScope — Telegram Channel Analytics &amp; Share Attribution</title>
     <meta
@@ -22,10 +23,6 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700&family=Vazirmatn:wght@400;500;600;700&display=swap"
-      rel="stylesheet"
-    />
-    <link
       rel="icon"
       type="image/svg+xml"
       href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect x='2' y='2' width='36' height='36' rx='10' fill='%230D1218' stroke='%232AABEE' stroke-opacity='0.45' stroke-width='1.5'/%3E%3Ccircle cx='20' cy='20' r='10' stroke='%232AABEE' stroke-width='1.75' fill='none' stroke-dasharray='46 17'/%3E%3Cpath d='M13.5 23.5L18 18.2L21.5 21L26.5 14.5' stroke='%23F0F4F8' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round' fill='none'/%3E%3Ccircle cx='26.5' cy='14.5' r='2.3' fill='%23F59E0B'/%3E%3C/svg%3E"
@@ -34,5 +31,9 @@
   <body class="bg-[#090C10] text-[#F0F4F8] antialiased selection:bg-[#2AABEE]/30 selection:text-white">
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700&family=Vazirmatn:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
   </body>
 </html>

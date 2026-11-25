@@ -160,3 +160,19 @@ html[dir='rtl'] .tg-drawer-surface {
   0% { background-position: 200% 0; }
   100% { background-position: -200% 0; }
 }
+
+@media (prefers-reduced-motion: reduce) {
+  .tg-shimmer,
+  .animate-ping,
+  .animate-pulse,
+  .animate-spin {
+    animation: none;
+  }
+
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto;
+    transition-duration: 0.01ms;
+  }
+}

@@ -1,5 +1,5 @@
 import React, { useRef, useState } from 'react';
-import { Camera, Download, FileSpreadsheet, Lock, Trash2, Upload, X } from 'lucide-react';
+import { Camera, Download, FileSpreadsheet, Loader2, Lock, Trash2, Upload, X } from 'lucide-react';
 import type {
   ChannelAnalyticsBundle,
   ChannelSnapshot,
@@ -7,6 +7,7 @@ import type {
 } from '../../types/analytics';
 import { getTranslations } from '../../i18n/translations';
 import { buildSnapshotFromPosts, exportPostsToCsv } from '../../utils/analyticsMath';
+import { MIN_VAULT_PIN_LENGTH, normalizePinDigits, VaultError } from '../../utils/cryptoVault';
 import { useDialogAccessibility } from '../../utils/dialogA11y';
 import { PasswordField } from '../common/PasswordField';
 
@@ -132,11 +133,26 @@ export const SnapshotModal: React.FC<SnapshotModalProps> = ({
       setVaultPinInput('');
       setStatusMsg(t.vaultSavedSuccess);
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : 'Failed to save encrypted session.');
+      if (err instanceof VaultError) {
+        if (err.code === 'PIN_TOO_SHORT') {
+          setErrorMsg(t.errPinTooShort);
+          return;
+        }
+        if (err.code === 'PIN_TOO_WEAK') {
+          setErrorMsg(t.errPinTooWeak);
+          return;
+        }
+      }
+      setErrorMsg(err instanceof Error ? err.message : t.errVaultSaveFailed);
     } finally {
       setSavingVault(false);
     }
   };
+
+  const normalizedPin = normalizePinDigits(vaultPinInput);
+  const isPinTooShort = normalizedPin.length > 0 && normalizedPin.length < MIN_VAULT_PIN_LENGTH;
+  const isPinTooWeak =
+    normalizedPin.length >= MIN_VAULT_PIN_LENGTH && new Set(Array.from(normalizedPin)).size <= 1;
 
   return (
     <div
@@ -159,9 +175,9 @@ export const SnapshotModal: React.FC<SnapshotModalProps> = ({
             type="button"
             onClick={onClose}
             aria-label={t.closeBtn}
-            className="rounded-lg p-1.5 text-[#8B9BB0] hover:bg-white/10 hover:text-[#F0F4F8] cursor-pointer"
+            className="inline-flex items-center justify-center min-w-[40px] min-h-[40px] rounded-lg p-2 text-[#8B9BB0] hover:bg-white/10 hover:text-[#F0F4F8] transition-colors cursor-pointer"
           >
-            <X className="w-4 h-4" />
+            <X className="w-4 h-4" aria-hidden="true" />
           </button>
         </div>
 
@@ -190,9 +206,9 @@ export const SnapshotModal: React.FC<SnapshotModalProps> = ({
                   lang === 'fa' ? 'اسنپ‌شات جدید در مرورگر ثبت شد.' : 'Snapshot saved locally.',
                 );
               }}
-              className="flex items-center justify-center gap-2 rounded-lg bg-[#2AABEE] px-3.5 py-2 text-xs font-semibold text-white hover:bg-[#3CB7F5] cursor-pointer"
+              className="flex items-center justify-center gap-2 rounded-lg bg-[#2AABEE] px-3.5 py-2 text-xs font-semibold text-[#090C10] hover:bg-[#3CB7F5] cursor-pointer"
             >
-              <Camera className="w-3.5 h-3.5" />
+              <Camera className="w-3.5 h-3.5" aria-hidden="true" />
               <span>{t.takeSnapshotBtn}</span>
             </button>
 
@@ -201,7 +217,7 @@ export const SnapshotModal: React.FC<SnapshotModalProps> = ({
               onClick={handleDownloadJson}
               className="flex items-center justify-center gap-2 rounded-lg border border-white/10 bg-[#0B0F14] px-3.5 py-2 text-xs font-medium text-[#F0F4F8] hover:bg-[#171D26] cursor-pointer"
             >
-              <Download className="w-3.5 h-3.5 text-[#5EC2F6]" />
+              <Download className="w-3.5 h-3.5 text-[#5EC2F6]" aria-hidden="true" />
               <span>{t.downloadSnapshotJson}</span>
             </button>
 
@@ -210,7 +226,7 @@ export const SnapshotModal: React.FC<SnapshotModalProps> = ({
               onClick={() => fileInputRef.current?.click()}
               className="flex items-center justify-center gap-2 rounded-lg border border-white/10 bg-[#0B0F14] px-3.5 py-2 text-xs font-medium text-[#F0F4F8] hover:bg-[#171D26] cursor-pointer"
             >
-              <Upload className="w-3.5 h-3.5 text-[#22C55E]" />
+              <Upload className="w-3.5 h-3.5 text-[#22C55E]" aria-hidden="true" />
               <span>{t.importSnapshotJson}</span>
             </button>
 
@@ -219,7 +235,7 @@ export const SnapshotModal: React.FC<SnapshotModalProps> = ({
               onClick={handleExportCsv}
               className="flex items-center justify-center gap-2 rounded-lg border border-white/10 bg-[#0B0F14] px-3.5 py-2 text-xs font-medium text-[#F0F4F8] hover:bg-[#171D26] cursor-pointer"
             >
-              <FileSpreadsheet className="w-3.5 h-3.5 text-[#F59E0B]" />
+              <FileSpreadsheet className="w-3.5 h-3.5 text-[#F59E0B]" aria-hidden="true" />
               <span>{t.exportCsvBtn}</span>
             </button>
           </div>
@@ -239,7 +255,7 @@ export const SnapshotModal: React.FC<SnapshotModalProps> = ({
               className="pt-3.5 border-t border-white/[0.08] space-y-2.5"
             >
               <div className="flex items-center gap-2 text-xs font-semibold text-[#5EC2F6]">
-                <Lock className="w-3.5 h-3.5" />
+                <Lock className="w-3.5 h-3.5" aria-hidden="true" />
                 <span>{t.saveVaultPostLoginBtn}</span>
               </div>
               <div className="flex flex-col sm:flex-row gap-2">
@@ -249,6 +265,15 @@ export const SnapshotModal: React.FC<SnapshotModalProps> = ({
                   onChange={(e) => setVaultPinInput(e.target.value)}
                   placeholder={t.vaultPinPlaceholder}
                   aria-label={t.vaultPinLabel}
+                  minLength={MIN_VAULT_PIN_LENGTH}
+                  aria-invalid={isPinTooShort || isPinTooWeak || Boolean(errorMsg) || undefined}
+                  aria-describedby={
+                    isPinTooShort || isPinTooWeak || normalizedPin.length === 0
+                      ? 'snapshot-pin-hint'
+                      : errorMsg
+                        ? 'snapshot-error-msg'
+                        : undefined
+                  }
                   autoComplete="new-password"
                   showLabel={t.showPasswordLabel}
                   hideLabel={t.hidePasswordLabel}
@@ -258,25 +283,51 @@ export const SnapshotModal: React.FC<SnapshotModalProps> = ({
                 <button
                   type="submit"
                   disabled={savingVault}
-                  className="rounded-lg bg-[#2AABEE] px-4 py-2 text-xs font-semibold text-white hover:bg-[#3CB7F5] disabled:opacity-60 whitespace-nowrap shrink-0 cursor-pointer"
+                  className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-[#2AABEE] px-4 py-2 text-xs font-semibold text-[#090C10] hover:bg-[#3CB7F5] disabled:opacity-60 whitespace-nowrap shrink-0 cursor-pointer"
                 >
-                  {savingVault ? '...' : lang === 'fa' ? 'ذخیره در گاوصندوق' : 'Lock & Save'}
+                  {savingVault ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
+                      <span>{lang === 'fa' ? 'در حال ذخیره...' : 'Saving...'}</span>
+                    </>
+                  ) : lang === 'fa' ? (
+                    'ذخیره در گاوصندوق'
+                  ) : (
+                    'Lock & Save'
+                  )}
                 </button>
               </div>
-              {vaultPinInput.trim().length === 0 && (
-                <p className="text-[11px] text-[#F59E0B]">{t.noPinWarning}</p>
-              )}
+              {isPinTooShort ? (
+                <p id="snapshot-pin-hint" role="alert" className="text-[11px] text-[#FCA5A5]">
+                  {t.errPinTooShort}
+                </p>
+              ) : isPinTooWeak ? (
+                <p id="snapshot-pin-hint" role="alert" className="text-[11px] text-[#FCA5A5]">
+                  {t.errPinTooWeak}
+                </p>
+              ) : normalizedPin.length === 0 ? (
+                <p id="snapshot-pin-hint" className="text-[11px] text-[#F59E0B]">
+                  {t.noPinWarning}
+                </p>
+              ) : null}
             </form>
           )}
 
           {statusMsg && (
-            <div className="rounded-lg border border-[#22C55E]/35 bg-[#22C55E]/10 px-3 py-2 text-xs text-[#22C55E]">
+            <div
+              role="status"
+              className="rounded-lg border border-[#22C55E]/35 bg-[#22C55E]/10 px-3 py-2 text-xs text-[#22C55E]"
+            >
               {statusMsg}
             </div>
           )}
 
           {errorMsg && (
-            <div className="rounded-lg border border-[#EF4444]/35 bg-[#EF4444]/10 px-3 py-2 text-xs text-[#fca5a5]">
+            <div
+              id="snapshot-error-msg"
+              role="alert"
+              className="rounded-lg border border-[#EF4444]/35 bg-[#EF4444]/10 px-3 py-2 text-xs text-[#fca5a5]"
+            >
               {errorMsg}
             </div>
           )}
@@ -288,7 +339,7 @@ export const SnapshotModal: React.FC<SnapshotModalProps> = ({
                 onClick={() => setConfirmWipe(true)}
                 className="inline-flex items-center gap-1.5 text-xs text-[#EF4444] hover:underline cursor-pointer"
               >
-                <Trash2 className="w-3.5 h-3.5" />
+                <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
                 <span>{t.wipeVaultBtn}</span>
               </button>
             ) : (
@@ -298,7 +349,7 @@ export const SnapshotModal: React.FC<SnapshotModalProps> = ({
                   <button
                     type="button"
                     onClick={() => setConfirmWipe(false)}
-                    className="rounded-md border border-white/10 px-2.5 py-1 text-[11px] text-[#F0F4F8] hover:bg-white/10 cursor-pointer"
+                    className="rounded-md border border-white/10 px-2.5 py-1.5 text-[11px] text-[#F0F4F8] hover:bg-white/10 cursor-pointer"
                   >
                     {t.cancelActionBtn}
                   </button>
@@ -312,7 +363,7 @@ export const SnapshotModal: React.FC<SnapshotModalProps> = ({
                         lang === 'fa' ? 'کل داده‌های مرورگر پاکسازی شد.' : 'All browser vault data wiped.',
                       );
                     }}
-                    className="rounded-md bg-[#EF4444] px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-[#DC2626] cursor-pointer"
+                    className="rounded-md bg-[#B91C1C] px-2.5 py-1.5 text-[11px] font-semibold text-white hover:bg-[#DC2626] cursor-pointer"
                   >
                     {t.confirmActionBtn}
                   </button>

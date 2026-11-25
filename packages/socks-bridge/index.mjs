@@ -34,14 +34,91 @@ const ALLOWED_SOCKS_HOSTS = new Set(
 
 const TELEGRAM_HOST_REGEX = /^(?:[a-zA-Z0-9-]+\.)?web\.telegram\.org$/;
 const HANDSHAKE_TIMEOUT_MS = 10_000;
+const PING_IDLE_TIMEOUT_MS = 5_000;
+const MAX_CONNECTIONS = 64;
+const HIGH_WATER_BYTES = 1024 * 1024;
+const MAX_BUFFERED_BYTES = 8 * 1024 * 1024;
 
 function constantTimeEqual(a, b) {
-  if (typeof a !== 'string' || typeof b !== 'string' || a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i += 1) {
-    diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  const hashA = crypto.createHash('sha256').update(a, 'utf8').digest();
+  const hashB = crypto.createHash('sha256').update(b, 'utf8').digest();
+  return crypto.timingSafeEqual(hashA, hashB);
+}
+
+function normalizeCloseCode(code) {
+  if (!Number.isInteger(code)) return 1000;
+  if (code === 1004 || code === 1005 || code === 1006 || code === 1015) return 1000;
+  if ((code >= 1000 && code <= 1014) || (code >= 3000 && code <= 4999)) return code;
+  return 1011;
+}
+
+function truncateUtf8(reason, maxBytes = 123) {
+  if (!reason) return '';
+  const buf = Buffer.from(String(reason), 'utf8');
+  if (buf.length <= maxBytes) return buf.toString('utf8');
+  let end = maxBytes;
+  while (end > 0 && (buf[end] & 0xc0) === 0x80) end -= 1;
+  return buf.subarray(0, end).toString('utf8');
+}
+
+function safeCloseWs(ws, code = 1000, reason = '') {
+  if (!ws || ws.readyState === WebSocket.CLOSING || ws.readyState === WebSocket.CLOSED) return;
+  if (ws.readyState === WebSocket.CONNECTING) {
+    try {
+      ws.terminate();
+    } catch {
+      // ignore
+    }
+    return;
   }
-  return diff === 0;
+  try {
+    ws.close(normalizeCloseCode(code), truncateUtf8(reason, 123));
+  } catch {
+    try {
+      ws.terminate();
+    } catch {
+      // ignore
+    }
+  }
+}
+
+function safeSendJson(ws, payload) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  try {
+    ws.send(JSON.stringify(payload));
+  } catch {
+    // ignore send on closing socket
+  }
+}
+
+function createBackpressureRelay(srcWs, dstWs) {
+  let paused = false;
+  return (data, isBinary) => {
+    if (!dstWs || dstWs.readyState !== WebSocket.OPEN) return;
+    if (dstWs.bufferedAmount > MAX_BUFFERED_BYTES) {
+      safeCloseWs(dstWs, 1011, 'Backpressure limit exceeded');
+      safeCloseWs(srcWs, 1011, 'Backpressure limit exceeded');
+      return;
+    }
+    try {
+      dstWs.send(data, { binary: isBinary });
+    } catch {
+      safeCloseWs(dstWs, 1011, 'Relay send failed');
+      safeCloseWs(srcWs, 1011, 'Relay send failed');
+      return;
+    }
+    if (!paused && dstWs.bufferedAmount > HIGH_WATER_BYTES && srcWs._socket && dstWs._socket) {
+      paused = true;
+      srcWs._socket.pause();
+      dstWs._socket.once('drain', () => {
+        paused = false;
+        if (srcWs._socket && !srcWs._socket.destroyed) {
+          srcWs._socket.resume();
+        }
+      });
+    }
+  };
 }
 
 function isAllowedOrigin(origin) {
@@ -73,7 +150,13 @@ function isAuthorizedToken(reqUrl, msgToken) {
 function isAllowedTelegramUrl(rawUrl) {
   try {
     const parsed = new URL(rawUrl);
-    return parsed.protocol === 'wss:' && TELEGRAM_HOST_REGEX.test(parsed.hostname);
+    return (
+      parsed.protocol === 'wss:' &&
+      (parsed.port === '' || parsed.port === '443') &&
+      !parsed.username &&
+      !parsed.password &&
+      TELEGRAM_HOST_REGEX.test(parsed.hostname)
+    );
   } catch {
     return false;
   }
@@ -102,67 +185,131 @@ const wss = new WebSocketServer({
 });
 
 wss.on('connection', (clientWs, req) => {
+  if (wss.clients.size > MAX_CONNECTIONS) {
+    safeSendJson(clientWs, { type: 'error', error: 'Too many concurrent connections' });
+    safeCloseWs(clientWs, 1013, 'Too many connections');
+    return;
+  }
+
   let upstreamWs = null;
   let handshakeCompleted = false;
+  let pingIdleTimer = null;
+  let relayClientToUpstream = null;
 
-  const handshakeTimer = setTimeout(() => {
-    if (!handshakeCompleted && clientWs.readyState === WebSocket.OPEN) {
-      clientWs.send(JSON.stringify({ type: 'error', error: 'Handshake timeout' }));
-      clientWs.close(1008, 'Handshake timeout');
+  const closeUpstream = () => {
+    if (!upstreamWs) return;
+    if (upstreamWs.readyState === WebSocket.CONNECTING) {
+      try {
+        upstreamWs.terminate();
+      } catch {
+        // ignore
+      }
+    } else {
+      safeCloseWs(upstreamWs, 1000);
+    }
+  };
+
+  let handshakeTimer = setTimeout(() => {
+    if (!handshakeCompleted) {
+      closeUpstream();
+      safeSendJson(clientWs, { type: 'error', error: 'Handshake timeout' });
+      safeCloseWs(clientWs, 1008, 'Handshake timeout');
     }
   }, HANDSHAKE_TIMEOUT_MS);
 
+  const clearTimers = () => {
+    if (handshakeTimer) {
+      clearTimeout(handshakeTimer);
+      handshakeTimer = null;
+    }
+    if (pingIdleTimer) {
+      clearTimeout(pingIdleTimer);
+      pingIdleTimer = null;
+    }
+  };
+
   clientWs.on('message', (data, isBinary) => {
     if (!handshakeCompleted) {
+      if (upstreamWs) {
+        safeSendJson(clientWs, { type: 'error', error: 'Handshake already in progress' });
+        safeCloseWs(clientWs, 1008, 'Duplicate handshake');
+        return;
+      }
+
       let msg;
       try {
         msg = JSON.parse(data.toString('utf8'));
       } catch {
-        clearTimeout(handshakeTimer);
-        clientWs.send(JSON.stringify({ type: 'error', error: 'Invalid handshake JSON' }));
-        clientWs.close(1008);
+        clearTimers();
+        safeSendJson(clientWs, { type: 'error', error: 'Invalid handshake JSON' });
+        safeCloseWs(clientWs, 1008, 'Invalid handshake JSON');
         return;
       }
 
       if (!isAuthorizedToken(req.url, msg?.token)) {
-        clearTimeout(handshakeTimer);
-        clientWs.send(JSON.stringify({ type: 'error', error: 'Unauthorized bridge token' }));
-        clientWs.close(1008, 'Unauthorized');
+        clearTimers();
+        safeSendJson(clientWs, { type: 'error', error: 'Unauthorized bridge token' });
+        safeCloseWs(clientWs, 1008, 'Unauthorized');
         return;
       }
 
       if (msg.type === 'ping') {
-        clearTimeout(handshakeTimer);
-        clientWs.send(JSON.stringify({ type: 'pong', ts: Date.now() }));
+        if (handshakeTimer) {
+          clearTimeout(handshakeTimer);
+          handshakeTimer = null;
+        }
+        safeSendJson(clientWs, { type: 'pong', ts: Date.now() });
+        if (pingIdleTimer) clearTimeout(pingIdleTimer);
+        pingIdleTimer = setTimeout(() => {
+          safeCloseWs(clientWs, 1000, 'Ping idle timeout');
+        }, PING_IDLE_TIMEOUT_MS);
         return;
       }
 
+      if (pingIdleTimer) {
+        clearTimeout(pingIdleTimer);
+        pingIdleTimer = null;
+      }
+      if (!handshakeTimer) {
+        handshakeTimer = setTimeout(() => {
+          if (!handshakeCompleted) {
+            closeUpstream();
+            safeSendJson(clientWs, { type: 'error', error: 'Handshake timeout' });
+            safeCloseWs(clientWs, 1008, 'Handshake timeout');
+          }
+        }, HANDSHAKE_TIMEOUT_MS);
+      }
+
       if (msg.type !== 'connect' || !isAllowedTelegramUrl(msg.targetUrl)) {
-        clearTimeout(handshakeTimer);
-        clientWs.send(JSON.stringify({ type: 'error', error: 'Target URL not in *.web.telegram.org allowlist' }));
-        clientWs.close(1008);
+        clearTimers();
+        safeSendJson(clientWs, { type: 'error', error: 'Target URL not in *.web.telegram.org allowlist' });
+        safeCloseWs(clientWs, 1008, 'Target URL not allowed');
         return;
       }
 
       const s = msg.socks5 || {};
-      if (!s.host || !s.port) {
-        clearTimeout(handshakeTimer);
-        clientWs.send(JSON.stringify({ type: 'error', error: 'Missing SOCKS5 host or port' }));
-        clientWs.close(1008);
+      const parsedPort = Number(s.port);
+      if (
+        typeof s.host !== 'string' ||
+        !s.host.trim() ||
+        !Number.isInteger(parsedPort) ||
+        parsedPort < 1 ||
+        parsedPort > 65535
+      ) {
+        clearTimers();
+        safeSendJson(clientWs, { type: 'error', error: 'Invalid SOCKS5 host or port (1..65535)' });
+        safeCloseWs(clientWs, 1008, 'Invalid SOCKS5 config');
         return;
       }
 
-      const safeHost = String(s.host).trim().replace(/[^a-zA-Z0-9.:\[\]-]/g, '').toLowerCase();
-      const safePort = Math.min(65535, Math.max(1, Number(s.port) || 1080));
+      const safeHost = s.host.trim().replace(/[^a-zA-Z0-9.:\[\]-]/g, '').toLowerCase();
       if (!safeHost || !ALLOWED_SOCKS_HOSTS.has(safeHost)) {
-        clearTimeout(handshakeTimer);
-        clientWs.send(
-          JSON.stringify({
-            type: 'error',
-            error: `SOCKS5 host "${safeHost || 'empty'}" is not in ALLOWED_SOCKS_HOSTS`,
-          }),
-        );
-        clientWs.close(1008);
+        clearTimers();
+        safeSendJson(clientWs, {
+          type: 'error',
+          error: `SOCKS5 host "${safeHost || 'empty'}" is not in ALLOWED_SOCKS_HOSTS`,
+        });
+        safeCloseWs(clientWs, 1008, 'SOCKS5 host not allowed');
         return;
       }
 
@@ -170,51 +317,57 @@ wss.on('connection', (clientWs, req) => {
         s.username && s.password
           ? `${encodeURIComponent(s.username)}:${encodeURIComponent(s.password)}@`
           : '';
-      const proxyUri = `socks5h://${auth}${safeHost}:${safePort}`;
+      const proxyUri = `socks5h://${auth}${safeHost}:${parsedPort}`;
       const agent = new SocksProxyAgent(proxyUri);
 
-      upstreamWs = new WebSocket(msg.targetUrl, 'binary', { agent });
+      upstreamWs = new WebSocket(msg.targetUrl, 'binary', {
+        agent,
+        maxPayload: 1024 * 1024,
+        handshakeTimeout: 15_000,
+      });
       upstreamWs.binaryType = 'arraybuffer';
+
+      const relayUpstreamToClient = createBackpressureRelay(upstreamWs, clientWs);
+      relayClientToUpstream = createBackpressureRelay(clientWs, upstreamWs);
 
       upstreamWs.on('open', () => {
         handshakeCompleted = true;
-        clearTimeout(handshakeTimer);
-        clientWs.send(JSON.stringify({ type: 'ready' }));
+        clearTimers();
+        safeSendJson(clientWs, { type: 'ready' });
       });
 
       upstreamWs.on('message', (upData, upIsBinary) => {
-        if (clientWs.readyState === WebSocket.OPEN) {
-          clientWs.send(upData, { binary: upIsBinary });
-        }
+        relayUpstreamToClient(upData, upIsBinary);
       });
 
       upstreamWs.on('error', (err) => {
-        clearTimeout(handshakeTimer);
-        if (!handshakeCompleted && clientWs.readyState === WebSocket.OPEN) {
-          clientWs.send(JSON.stringify({ type: 'error', error: err.message }));
+        clearTimers();
+        if (!handshakeCompleted) {
+          safeSendJson(clientWs, { type: 'error', error: err.message });
         }
-        clientWs.close(1011, err.message);
+        safeCloseWs(clientWs, 1011, err.message);
       });
 
       upstreamWs.on('close', (code, reason) => {
-        clearTimeout(handshakeTimer);
-        if (clientWs.readyState === WebSocket.OPEN) {
-          clientWs.close(code === 1005 || code === 1006 ? 1000 : code, reason.toString());
-        }
+        clearTimers();
+        safeCloseWs(clientWs, code, reason ? reason.toString('utf8') : '');
       });
       return;
     }
 
-    if (upstreamWs && upstreamWs.readyState === WebSocket.OPEN) {
-      upstreamWs.send(data, { binary: isBinary });
+    if (relayClientToUpstream) {
+      relayClientToUpstream(data, isBinary);
     }
   });
 
+  clientWs.on('error', () => {
+    clearTimers();
+    closeUpstream();
+  });
+
   clientWs.on('close', () => {
-    clearTimeout(handshakeTimer);
-    if (upstreamWs && upstreamWs.readyState <= WebSocket.OPEN) {
-      upstreamWs.close();
-    }
+    clearTimers();
+    closeUpstream();
   });
 });
 

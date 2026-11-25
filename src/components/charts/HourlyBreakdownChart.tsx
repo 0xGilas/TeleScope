@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { LanguageCode, ParsedStatsGraph } from '../../types/analytics';
+import { getTranslations } from '../../i18n/translations';
 import { computeAxisTicks, formatCompactNumber } from '../../utils/analyticsMath';
 
 interface HourlyBreakdownChartProps {
@@ -12,11 +13,13 @@ interface HourlyBreakdownChartProps {
 
 export const HourlyBreakdownChart: React.FC<HourlyBreakdownChartProps> = React.memo(
   ({ graph, title, lang = 'fa', timezoneOffsetMinutes = 0, timezoneLabel = 'UTC' }) => {
+    const t = getTranslations(lang);
     const primary = graph.series[0];
     const secondary = graph.series[1];
     const [hoverHour, setHoverHour] = useState<number | null>(null);
+    const [pinnedHour, setPinnedHour] = useState<number | null>(null);
     const rafRef = useRef<number | null>(null);
-    const pendingHourRef = useRef<number | null>(null);
+    const pendingPointerRef = useRef<{ clientX: number; target: SVGRectElement } | null>(null);
 
     useEffect(() => {
       return () => {
@@ -80,14 +83,14 @@ export const HourlyBreakdownChart: React.FC<HourlyBreakdownChartProps> = React.m
     const stepW = count > 0 ? plotW / count : plotW;
     const barWidth = Math.max(6, Math.min(24, stepW * 0.68));
 
-    const getHourFromPointer = useCallback(
-      (e: React.PointerEvent<SVGRectElement>): number | null => {
+    const getHourFromClientX = useCallback(
+      (clientX: number, target: SVGRectElement): number | null => {
         if (count === 0) return null;
-        const svg = e.currentTarget.ownerSVGElement;
+        const svg = target.ownerSVGElement;
         if (!svg) return null;
         const rect = svg.getBoundingClientRect();
         if (rect.width <= 0) return null;
-        const svgX = ((e.clientX - rect.left) / rect.width) * svgWidth;
+        const svgX = ((clientX - rect.left) / rect.width) * svgWidth;
         const raw = Math.floor((svgX - padLeft) / stepW);
         return Math.max(0, Math.min(count - 1, raw));
       },
@@ -96,17 +99,19 @@ export const HourlyBreakdownChart: React.FC<HourlyBreakdownChartProps> = React.m
 
     const handlePointerMove = useCallback(
       (e: React.PointerEvent<SVGRectElement>) => {
-        const idx = getHourFromPointer(e);
-        if (idx === null) return;
-        pendingHourRef.current = idx;
+        if (e.pointerType === 'touch') return;
+        pendingPointerRef.current = { clientX: e.clientX, target: e.currentTarget };
         if (rafRef.current === null) {
           rafRef.current = requestAnimationFrame(() => {
             rafRef.current = null;
-            setHoverHour(pendingHourRef.current);
+            const pending = pendingPointerRef.current;
+            if (!pending) return;
+            const idx = getHourFromClientX(pending.clientX, pending.target);
+            if (idx !== null) setHoverHour(idx);
           });
         }
       },
-      [getHourFromPointer],
+      [getHourFromClientX],
     );
 
     const handlePointerLeave = useCallback(() => {
@@ -114,23 +119,65 @@ export const HourlyBreakdownChart: React.FC<HourlyBreakdownChartProps> = React.m
         cancelAnimationFrame(rafRef.current);
         rafRef.current = null;
       }
-      pendingHourRef.current = null;
+      pendingPointerRef.current = null;
       setHoverHour(null);
     }, []);
+
+    const handleOverlayClick = useCallback(
+      (e: React.MouseEvent<SVGRectElement>) => {
+        const idx = getHourFromClientX(e.clientX, e.currentTarget);
+        if (idx === null) return;
+        setHoverHour(null);
+        setPinnedHour((prev) => (prev === idx ? null : idx));
+      },
+      [getHourFromClientX],
+    );
+
+    const handleKeyDown = useCallback(
+      (e: React.KeyboardEvent<HTMLDivElement>) => {
+        if (count === 0) return;
+        if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+          e.preventDefault();
+          const delta = e.key === 'ArrowRight' ? 1 : -1;
+          setHoverHour(null);
+          setPinnedHour((prev) => {
+            const base = prev === null ? (delta > 0 ? 0 : count - 1) : prev + delta;
+            return Math.max(0, Math.min(count - 1, base));
+          });
+        } else if (e.key === 'Home') {
+          e.preventDefault();
+          setHoverHour(null);
+          setPinnedHour(0);
+        } else if (e.key === 'End') {
+          e.preventDefault();
+          setHoverHour(null);
+          setPinnedHour(count - 1);
+        } else if (e.key === 'Escape') {
+          setHoverHour(null);
+          setPinnedHour(null);
+        }
+      },
+      [count],
+    );
 
     if (!primary || count === 0) {
       return (
         <section className="tg-panel rounded-xl p-5" aria-label={title}>
           <h3 className="text-[13px] font-semibold text-[#5eb5f7]">{title}</h3>
           <p className="text-xs text-[#7f91a4] mt-3">
-            {lang === 'fa' ? 'داده‌ای برای ساعات اوج بازدید ثبت نشده است.' : 'No hourly activity data available yet.'}
+            {t.noHourlyDataMsg}
           </p>
         </section>
       );
     }
 
+    const activeHour = hoverHour ?? pinnedHour;
     const peakLabel = `${String(peakIdx).padStart(2, '0')}:00 ${timezoneLabel}`;
     const peakCount = values[peakIdx] ?? 0;
+    const getUnitSuffix = (label: string) =>
+      /share|forward|بازنشر|شیر|اشتراک/i.test(label) ? t.chartSharesSuffix : t.chartViewsSuffix;
+    const primaryUnit = getUnitSuffix(primary.label);
+    const secondaryUnit = secondary ? getUnitSuffix(secondary.label) : '';
 
     return (
       <section className="tg-panel rounded-xl p-4 sm:p-5" aria-label={title}>
@@ -144,20 +191,36 @@ export const HourlyBreakdownChart: React.FC<HourlyBreakdownChartProps> = React.m
             )}
           </div>
           <span className="text-xs text-[#8B9BB0] font-mono-num">
-            {lang === 'fa' ? 'اوج بازدید:' : 'Peak:'}{' '}
+            {t.peakHourLabel}{' '}
             <span dir="ltr" className="inline-block">
               <strong className="text-[#5EC2F6] font-semibold">{peakLabel}</strong> (
-              {peakCount.toLocaleString('en-US')})
+              {peakCount.toLocaleString('en-US')} {primaryUnit})
             </span>
           </span>
         </div>
 
-        <div className="relative select-none" dir="ltr">
+        <div
+          className="relative select-none rounded-lg focus-visible:outline-2 focus-visible:outline-[#2AABEE]"
+          dir="ltr"
+          tabIndex={0}
+          role="region"
+          aria-label={`${title} — ${t.chartHourlyRegion}`}
+          onKeyDown={handleKeyDown}
+        >
+          <div className="sr-only" aria-live="polite">
+            {activeHour !== null
+              ? `${String(activeHour).padStart(2, '0')}:00 ${timezoneLabel}: ${primary.label} ${(values[activeHour] ?? 0).toLocaleString('en-US')} ${primaryUnit}${
+                  secondary
+                    ? `, ${secondary.label} ${(secondaryValues[activeHour] ?? 0).toLocaleString('en-US')} ${secondaryUnit}`
+                    : ''
+                }`
+              : ''}
+          </div>
           <svg
             viewBox={`0 0 ${svgWidth} ${height}`}
             className="w-full h-auto overflow-visible"
             role="img"
-            aria-label={`${title} hourly bar chart`}
+            aria-label={`${title} — ${t.chartHourlyRegion}`}
           >
             {/* Y-Axis Gridlines & Ticks */}
             <g pointerEvents="none">
@@ -187,10 +250,10 @@ export const HourlyBreakdownChart: React.FC<HourlyBreakdownChartProps> = React.m
                 );
               })}
 
-              {/* Hover Column Highlight */}
-              {hoverHour !== null && (
+              {/* Hover / Pinned Column Highlight */}
+              {activeHour !== null && (
                 <rect
-                  x={padLeft + hoverHour * stepW + 1}
+                  x={padLeft + activeHour * stepW + 1}
                   y={padTop}
                   width={Math.max(4, stepW - 2)}
                   height={plotH}
@@ -203,7 +266,7 @@ export const HourlyBreakdownChart: React.FC<HourlyBreakdownChartProps> = React.m
               {values.map((val, hour) => {
                 const centerX = padLeft + (hour + 0.5) * stepW;
                 const isPeak = hour === peakIdx && maxVal > 0;
-                const isHovered = hour === hoverHour;
+                const isHovered = hour === activeHour;
                 const rawH = val > 0 ? Math.max(4, (val / (yMax || 1)) * plotH) : 2;
                 const barY = baselineY - rawH;
 
@@ -254,7 +317,7 @@ export const HourlyBreakdownChart: React.FC<HourlyBreakdownChartProps> = React.m
                 const showLabel = hour % 3 === 0 || hour === count - 1;
                 if (!showLabel) return null;
                 const centerX = padLeft + (hour + 0.5) * stepW;
-                const isHighlighted = hour === hoverHour || (hour === peakIdx && maxVal > 0);
+                const isHighlighted = hour === activeHour || (hour === peakIdx && maxVal > 0);
                 return (
                   <g key={`x-${hour}`}>
                     <line
@@ -287,28 +350,29 @@ export const HourlyBreakdownChart: React.FC<HourlyBreakdownChartProps> = React.m
               width={Math.max(1, plotW)}
               height={plotH + 22}
               fill="transparent"
-              className="cursor-crosshair"
+              className="cursor-pointer touch-pan-y"
               onPointerMove={handlePointerMove}
               onPointerLeave={handlePointerLeave}
+              onClick={handleOverlayClick}
             />
           </svg>
 
-          {/* Crisp Hover Tooltip */}
-          {hoverHour !== null && (
+          {/* Crisp Hover / Pinned Tooltip */}
+          {activeHour !== null && (
             <div
               className={`pointer-events-none absolute top-2 tg-tooltip-glass rounded-xl px-3 py-2 ${
-                hoverHour >= Math.floor(count / 2) ? 'left-12' : 'right-2'
+                activeHour >= Math.floor(count / 2) ? 'left-12' : 'right-2'
               }`}
               style={{ minWidth: 148 }}
             >
               <div className="text-[11px] font-medium text-[#7f91a4] font-mono-num mb-1">
-                {String(hoverHour).padStart(2, '0')}:00 {timezoneLabel}
+                {String(activeHour).padStart(2, '0')}:00 {timezoneLabel}
               </div>
               <div className="space-y-1">
                 <div className="flex items-center justify-between gap-4 text-xs">
                   <span className="text-[#f5f7fa]">{primary.label}</span>
                   <span className="font-mono-num font-semibold text-[#5EC2F6]">
-                    {(values[hoverHour] ?? 0).toLocaleString('en-US')}
+                    {(values[activeHour] ?? 0).toLocaleString('en-US')}
                   </span>
                 </div>
                 {secondary && (
@@ -318,7 +382,7 @@ export const HourlyBreakdownChart: React.FC<HourlyBreakdownChartProps> = React.m
                       className="font-mono-num font-semibold"
                       style={{ color: secondary.color || '#8B9BB0' }}
                     >
-                      {(secondaryValues[hoverHour] ?? 0).toLocaleString('en-US')}
+                      {(secondaryValues[activeHour] ?? 0).toLocaleString('en-US')}
                     </span>
                   </div>
                 )}

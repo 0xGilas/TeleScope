@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import { Lock, LogOut, Radio, Search, Shield, X } from 'lucide-react';
 import type {
   ChannelSummary,
@@ -7,6 +7,7 @@ import type {
 } from '../../types/analytics';
 import { getTranslations } from '../../i18n/translations';
 import { formatCompactNumber } from '../../utils/analyticsMath';
+import { useDialogAccessibility } from '../../utils/dialogA11y';
 import { BrandLogo } from '../common/BrandLogo';
 import { ChannelAvatar } from '../common/ChannelAvatar';
 
@@ -40,8 +41,11 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
   onCloseMobile,
 }) => {
   const t = getTranslations(lang);
+  const mobileAsideRef = useRef<HTMLElement | null>(null);
   const [channelQuery, setChannelQuery] = useState('');
   const [confirmLogout, setConfirmLogout] = useState(false);
+
+  useDialogAccessibility(mobileOpen, mobileAsideRef);
 
   const filteredChannels = useMemo(() => {
     const q = channelQuery.trim().toLowerCase();
@@ -53,7 +57,7 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
     );
   }, [channels, channelQuery]);
 
-  const sidebarBody = (
+  const renderSidebarBody = (isMobile: boolean) => (
     <div className="flex flex-col h-full bg-[#0D1117]/95 border-e border-white/[0.08] w-[264px] shrink-0">
       {/* Brand Row */}
       <div className="h-14 px-4 flex items-center justify-between border-b border-white/[0.08]">
@@ -66,7 +70,7 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
           <button
             type="button"
             onClick={onToggleLang}
-            className="rounded-lg border border-white/10 bg-[#11161D] px-2.5 py-1 text-[11px] font-medium text-[#8B9BB0] hover:text-[#F0F4F8] hover:bg-white/[0.08] transition-colors cursor-pointer"
+            className="rounded-lg border border-white/10 bg-[#11161D] px-2.5 py-1.5 text-[11px] font-medium text-[#8B9BB0] hover:text-[#F0F4F8] hover:bg-white/[0.08] transition-colors cursor-pointer"
           >
             {t.switchLang}
           </button>
@@ -74,9 +78,9 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
             type="button"
             onClick={onCloseMobile}
             aria-label={t.closeBtn}
-            className="lg:hidden rounded-lg p-1 text-[#8B9BB0] hover:text-[#F0F4F8] cursor-pointer"
+            className="lg:hidden inline-flex items-center justify-center min-w-[40px] min-h-[40px] rounded-lg p-2 text-[#8B9BB0] hover:bg-white/10 hover:text-[#F0F4F8] transition-colors cursor-pointer"
           >
-            <X className="w-4 h-4" />
+            <X className="w-4 h-4" aria-hidden="true" />
           </button>
         </div>
       </div>
@@ -86,12 +90,12 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
         <div className="flex items-center gap-2 text-[11px] text-[#8B9BB0] min-w-0">
           {isSampleMode ? (
             <>
-              <Radio className="w-3.5 h-3.5 text-[#5EC2F6] shrink-0" />
+              <Radio className="w-3.5 h-3.5 text-[#5EC2F6] shrink-0" aria-hidden="true" />
               <span className="truncate">{t.sampleModeLabel}</span>
             </>
           ) : (
             <>
-              <Shield className="w-3.5 h-3.5 text-[#22C55E] shrink-0" />
+              <Shield className="w-3.5 h-3.5 text-[#22C55E] shrink-0" aria-hidden="true" />
               <span className="truncate">
                 {persistenceMode === 'vault' ? t.sessionVault : t.sessionEphemeral}
               </span>
@@ -103,9 +107,9 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
             type="button"
             onClick={onOpenVaultModal}
             title={t.saveVaultPostLoginBtn}
-            className="inline-flex items-center gap-1 text-[11px] text-[#5EC2F6] hover:underline whitespace-nowrap shrink-0 cursor-pointer"
+            className="inline-flex items-center gap-1 rounded-md px-2 py-1.5 -my-1 text-[11px] text-[#5EC2F6] hover:bg-[#2AABEE]/10 hover:underline whitespace-nowrap shrink-0 cursor-pointer"
           >
-            <Lock className="w-3 h-3" />
+            <Lock className="w-3 h-3" aria-hidden="true" />
             <span>{lang === 'fa' ? 'ذخیره' : 'Save'}</span>
           </button>
         )}
@@ -113,14 +117,17 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
 
       {/* Channels List */}
       <div className="flex-1 overflow-y-auto p-2 space-y-1">
-        <div className="px-2.5 py-1.5 text-[11px] font-medium text-[#8596AA]">
+        <div
+          id={isMobile ? 'mobile-sidebar-title' : undefined}
+          className="px-2.5 py-1.5 text-[11px] font-medium text-[#8596AA]"
+        >
           {t.channelsHeader}
         </div>
 
         {channels.length > 5 && (
           <div className="px-1.5 pb-1.5">
             <div className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-[#0B0F14] px-2.5 py-1.5">
-              <Search className="w-3.5 h-3.5 text-[#8596AA] shrink-0" />
+              <Search className="w-3.5 h-3.5 text-[#8596AA] shrink-0" aria-hidden="true" />
               <input
                 type="search"
                 value={channelQuery}
@@ -142,6 +149,7 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
               <button
                 key={ch.id}
                 type="button"
+                aria-current={active ? 'page' : undefined}
                 onClick={() => {
                   onSelectChannel(ch.id);
                   onCloseMobile();
@@ -154,7 +162,7 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
               >
                 <ChannelAvatar channel={ch} size={36} />
                 <div className="min-w-0 flex-1">
-                  <div className="text-[13px] font-semibold truncate text-[#F0F4F8]">
+                  <div title={ch.title} className="text-[13px] font-semibold truncate text-[#F0F4F8]">
                     {ch.title}
                   </div>
                   <div className="text-[11px] text-[#8B9BB0] flex items-center gap-1.5 font-mono-num truncate">
@@ -185,7 +193,7 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
             onClick={onLockSession}
             className="w-full flex items-center justify-center gap-2 rounded-lg border border-[#2AABEE]/30 bg-[#2AABEE]/10 px-3 py-2 text-xs font-medium text-[#5EC2F6] hover:bg-[#2AABEE]/20 transition-colors cursor-pointer"
           >
-            <Lock className="w-3.5 h-3.5" />
+            <Lock className="w-3.5 h-3.5" aria-hidden="true" />
             <span>{t.lockVaultBtn}</span>
           </button>
         )}
@@ -196,7 +204,7 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
             onClick={() => (isSampleMode ? onLogout() : setConfirmLogout(true))}
             className="w-full flex items-center justify-center gap-2 rounded-lg border border-white/[0.08] bg-[#0B0F14] px-3 py-2 text-xs font-medium text-[#EF4444] hover:bg-[#EF4444]/10 transition-colors cursor-pointer"
           >
-            <LogOut className="w-3.5 h-3.5" />
+            <LogOut className="w-3.5 h-3.5" aria-hidden="true" />
             <span>{t.logoutWipeBtn}</span>
           </button>
         ) : (
@@ -206,7 +214,7 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
               <button
                 type="button"
                 onClick={() => setConfirmLogout(false)}
-                className="flex-1 rounded-md border border-white/10 py-1 text-[11px] text-[#F0F4F8] hover:bg-white/10 cursor-pointer"
+                className="flex-1 rounded-md border border-white/10 py-1.5 text-[11px] text-[#F0F4F8] hover:bg-white/10 cursor-pointer"
               >
                 {t.cancelActionBtn}
               </button>
@@ -216,7 +224,7 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
                   setConfirmLogout(false);
                   onLogout();
                 }}
-                className="flex-1 rounded-md bg-[#EF4444] py-1 text-[11px] font-semibold text-white hover:bg-[#DC2626] cursor-pointer"
+                className="flex-1 rounded-md bg-[#B91C1C] py-1.5 text-[11px] font-semibold text-white hover:bg-[#DC2626] cursor-pointer"
               >
                 {t.confirmActionBtn}
               </button>
@@ -229,7 +237,7 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
 
   return (
     <>
-      <aside className="hidden lg:block h-screen sticky top-0">{sidebarBody}</aside>
+      <aside className="hidden lg:block h-screen sticky top-0">{renderSidebarBody(false)}</aside>
 
       {mobileOpen && (
         <div className="fixed inset-0 z-50 lg:hidden flex">
@@ -238,7 +246,16 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
             onClick={onCloseMobile}
             aria-hidden="true"
           />
-          <aside className="relative z-10 h-full">{sidebarBody}</aside>
+          <aside
+            ref={mobileAsideRef}
+            tabIndex={-1}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="mobile-sidebar-title"
+            className="relative z-10 h-full focus:outline-none"
+          >
+            {renderSidebarBody(true)}
+          </aside>
         </div>
       )}
     </>

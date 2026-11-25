@@ -178,15 +178,24 @@ class TelegramWorkerBridge {
     return this.invoke<{ sessionString: string }>({ type: 'export_session' });
   }
 
+  private rejectAllPending(reason: string) {
+    if (this.pending.size === 0) return;
+    const err = new Error(reason);
+    for (const entry of this.pending.values()) {
+      entry.reject(err);
+    }
+    this.pending.clear();
+  }
+
   terminateOnly() {
     if (this.pendingAttributionTimer) {
       clearTimeout(this.pendingAttributionTimer);
       this.pendingAttributionTimer = null;
     }
+    this.rejectAllPending('Telegram worker terminated');
     if (this.worker) {
       this.worker.terminate();
       this.worker = null;
-      this.pending.clear();
     }
   }
 
@@ -199,9 +208,9 @@ class TelegramWorkerBridge {
     try {
       await this.invoke<{ loggedOut: boolean }>({ type: 'logout' });
     } finally {
+      this.rejectAllPending('Telegram worker terminated');
       this.worker.terminate();
       this.worker = null;
-      this.pending.clear();
     }
   }
 
@@ -259,7 +268,13 @@ class TelegramWorkerBridge {
   }
 
   abortAttribution() {
+    if (!this.worker) return Promise.resolve({ aborted: false });
     return this.invoke<{ aborted: boolean }>({ type: 'abort_attribution' });
+  }
+
+  abortChannelSync() {
+    if (!this.worker) return Promise.resolve({ aborted: false });
+    return this.invoke<{ aborted: boolean }>({ type: 'abort_channel_sync' });
   }
 }
 

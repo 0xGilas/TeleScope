@@ -1,5 +1,5 @@
 import React, { useDeferredValue, useEffect, useMemo, useState } from 'react';
-import { Layers, Search } from 'lucide-react';
+import { ArrowDown, Layers, Search } from 'lucide-react';
 import type {
   LanguageCode,
   PostFilterMode,
@@ -20,6 +20,15 @@ interface ShareDetectiveTabProps {
 }
 
 const PAGE_SIZE = 50;
+
+const shortDateFormatterCache: Record<LanguageCode, Intl.DateTimeFormat> = {
+  fa: new Intl.DateTimeFormat('fa-IR', { month: 'short', day: 'numeric', timeZone: 'UTC' }),
+  en: new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' }),
+};
+
+function formatShortDate(ts: number, lang: LanguageCode): string {
+  return Number.isFinite(ts) ? shortDateFormatterCache[lang].format(ts) : '—';
+}
 
 function useIsDesktop(): boolean {
   const [isDesktop, setIsDesktop] = useState(() =>
@@ -50,13 +59,22 @@ export const ShareDetectiveTab: React.FC<ShareDetectiveTabProps> = React.memo(({
   const [displayLimit, setDisplayLimit] = useState(PAGE_SIZE);
   const deferredQuery = useDeferredValue(query);
 
+  const channelFingerprint =
+    posts.length === 0
+      ? 'empty'
+      : `${posts[posts.length - 1].key}:${posts[posts.length - 1].date}:${posts[0].permalink?.replace(/\/\d+$/, '') ?? ''}`;
+
   useEffect(() => {
     setDisplayLimit(PAGE_SIZE);
-  }, [deferredQuery, filterMode, sortBy, posts]);
+  }, [channelFingerprint, deferredQuery, filterMode, sortBy]);
 
   const referenceNow = useMemo(() => {
     if (posts.length === 0) return Date.now();
-    return Math.max(...posts.map((p) => p.date)) + 1000;
+    let maxDate = 0;
+    for (let i = 0; i < posts.length; i += 1) {
+      if (posts[i].date > maxDate) maxDate = posts[i].date;
+    }
+    return maxDate + 1000;
   }, [posts]);
 
   const benchmarks = useMemo(() => computeChannelBenchmarks(posts), [posts]);
@@ -92,7 +110,7 @@ export const ShareDetectiveTab: React.FC<ShareDetectiveTabProps> = React.memo(({
         <div className="flex flex-col sm:flex-row gap-3 justify-between">
           <div className="flex items-center flex-1 max-w-md rounded-lg border border-white/12 bg-[#0B0F14] overflow-hidden focus-within:border-[#2AABEE] focus-within:ring-2 focus-within:ring-[#2AABEE]/25 transition-colors">
             <span className="ps-3 pe-1 text-[#8596AA] shrink-0 flex items-center pointer-events-none">
-              <Search className="w-4 h-4" />
+              <Search className="w-4 h-4" aria-hidden="true" />
             </span>
             <input
               type="search"
@@ -108,7 +126,7 @@ export const ShareDetectiveTab: React.FC<ShareDetectiveTabProps> = React.memo(({
             <select
               value={sortBy}
               onChange={(e) => setSortBy(e.target.value as PostSortBy)}
-              aria-label="Sort posts"
+              aria-label={t.sortPostsLabel}
               className="rounded-lg border border-white/12 bg-[#0B0F14] px-3 py-2 text-xs text-[#F0F4F8] focus:border-[#2AABEE] focus:outline-none cursor-pointer"
             >
               <option value="shares_desc">{t.sortShares}</option>
@@ -129,6 +147,7 @@ export const ShareDetectiveTab: React.FC<ShareDetectiveTabProps> = React.memo(({
               <button
                 key={btn.id}
                 type="button"
+                aria-pressed={active}
                 onClick={() => setFilterMode(btn.id)}
                 className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
                   active
@@ -165,6 +184,7 @@ export const ShareDetectiveTab: React.FC<ShareDetectiveTabProps> = React.memo(({
             <div className="divide-y divide-white/[0.06]">
               {pagedPosts.map((post) => {
                 const isOutlier = benchmarks.p90Views > 0 && post.views >= benchmarks.p90Views;
+                const displayTitle = getPostDisplayTitle(post, lang);
                 return (
                   <button
                     key={post.key}
@@ -175,12 +195,12 @@ export const ShareDetectiveTab: React.FC<ShareDetectiveTabProps> = React.memo(({
                     <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-[#7f91a4] font-mono-num">
                       <span dir="ltr">#{post.primaryId}</span>
                       <span aria-hidden="true">·</span>
-                      <span className="capitalize">{post.mediaKind}</span>
+                      <span>{t.mediaKindLabels[post.mediaKind] ?? post.mediaKind}</span>
                       {post.isAlbum && (
                         <>
                           <span aria-hidden="true">·</span>
                           <span className="inline-flex items-center gap-1 text-[#5eb5f7]">
-                            <Layers className="w-3 h-3" />
+                            <Layers className="w-3 h-3" aria-hidden="true" />
                             {post.albumChildren.length} {t.itemsLabel}
                           </span>
                         </>
@@ -201,8 +221,11 @@ export const ShareDetectiveTab: React.FC<ShareDetectiveTabProps> = React.memo(({
                           className="w-8 h-8 rounded-md object-cover border border-white/10 shrink-0"
                         />
                       )}
-                      <div className="text-xs font-medium text-[#f5f7fa] line-clamp-2 leading-relaxed">
-                        {getPostDisplayTitle(post, lang)}
+                      <div
+                        className="text-xs font-medium text-[#f5f7fa] line-clamp-2 leading-relaxed"
+                        title={displayTitle}
+                      >
+                        {displayTitle}
                       </div>
                     </div>
                     <div
@@ -210,11 +233,7 @@ export const ShareDetectiveTab: React.FC<ShareDetectiveTabProps> = React.memo(({
                       className="flex flex-wrap items-center justify-between gap-2 pt-1 text-[11px] font-mono-num"
                     >
                       <span className="text-[#8B9BB0]">
-                        {new Date(post.date).toLocaleDateString(lang === 'fa' ? 'fa-IR' : 'en-US', {
-                          month: 'short',
-                          day: 'numeric',
-                          timeZone: 'UTC',
-                        })}
+                        {formatShortDate(post.date, lang)}
                       </span>
                       <div className="flex items-center gap-2.5">
                         <span className={isOutlier ? 'text-[#4dcd5e] font-semibold' : 'text-[#f5f7fa]'}>
@@ -237,35 +256,55 @@ export const ShareDetectiveTab: React.FC<ShareDetectiveTabProps> = React.memo(({
                 <thead>
                   <tr className="border-b border-white/[0.06] bg-[#0B0F14]/80 text-[11px] font-semibold text-[#8B9BB0]">
                     <th className="py-2.5 px-4 text-start">{t.colPost}</th>
-                    <th className="py-2.5 px-3 text-start whitespace-nowrap">
-                      <button type="button" onClick={() => setSortBy('date_desc')} className={`hover:text-[#F0F4F8] cursor-pointer ${sortBy === 'date_desc' ? 'text-[#5EC2F6]' : ''}`}>{t.colDate}</button>
-                    </th>
-                    <th className="py-2.5 px-3 text-end whitespace-nowrap">
-                      <button type="button" onClick={() => setSortBy('views_desc')} className={`hover:text-[#F0F4F8] cursor-pointer ${sortBy === 'views_desc' ? 'text-[#5EC2F6]' : ''}`}>{t.colViews}</button>
-                    </th>
-                    <th className="py-2.5 px-3 text-end whitespace-nowrap">
-                      <button type="button" onClick={() => setSortBy('shares_desc')} className={`hover:text-[#F0F4F8] cursor-pointer ${sortBy === 'shares_desc' ? 'text-[#5EC2F6]' : ''}`}>{t.colShares}</button>
-                    </th>
-                    <th className="py-2.5 px-3 text-end whitespace-nowrap">
-                      <button type="button" onClick={() => setSortBy('evergreen_desc')} className={`hover:text-[#F0F4F8] cursor-pointer ${sortBy === 'evergreen_desc' ? 'text-[#5EC2F6]' : ''}`}>{t.colEvergreen}</button>
-                    </th>
-                    <th className="py-2.5 px-3 text-end whitespace-nowrap">
-                      <button type="button" onClick={() => setSortBy('share_rate_desc')} className={`hover:text-[#F0F4F8] cursor-pointer ${sortBy === 'share_rate_desc' ? 'text-[#5EC2F6]' : ''}`}>{t.colRate}</button>
-                    </th>
-                    <th className="py-2.5 px-4 text-end whitespace-nowrap">
-                      <button type="button" onClick={() => setSortBy('reactions_desc')} className={`hover:text-[#F0F4F8] cursor-pointer ${sortBy === 'reactions_desc' ? 'text-[#5EC2F6]' : ''}`}>{t.colReactions}</button>
-                    </th>
+                    {(
+                      [
+                        { key: 'date_desc', label: t.colDate, align: 'text-start', px: 'px-3' },
+                        { key: 'views_desc', label: t.colViews, align: 'text-end', px: 'px-3' },
+                        { key: 'shares_desc', label: t.colShares, align: 'text-end', px: 'px-3' },
+                        { key: 'evergreen_desc', label: t.colEvergreen, align: 'text-end', px: 'px-3' },
+                        { key: 'share_rate_desc', label: t.colRate, align: 'text-end', px: 'px-3' },
+                        { key: 'reactions_desc', label: t.colReactions, align: 'text-end', px: 'px-4' },
+                      ] as const
+                    ).map((col) => {
+                      const isSorted = sortBy === col.key;
+                      return (
+                        <th
+                          key={col.key}
+                          className={`py-2.5 ${col.px} ${col.align} whitespace-nowrap`}
+                          aria-sort={isSorted ? 'descending' : 'none'}
+                        >
+                          <button
+                            type="button"
+                            onClick={() => setSortBy(col.key)}
+                            className={`inline-flex items-center gap-1 hover:text-[#F0F4F8] cursor-pointer ${
+                              isSorted ? 'text-[#5EC2F6]' : ''
+                            }`}
+                          >
+                            <span>{col.label}</span>
+                            {isSorted && <ArrowDown className="w-3 h-3 shrink-0" aria-hidden="true" />}
+                          </button>
+                        </th>
+                      );
+                    })}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-white/[0.06]">
                   {pagedPosts.map((post) => {
                     const isOutlier = benchmarks.p90Views > 0 && post.views >= benchmarks.p90Views;
+                    const displayTitle = getPostDisplayTitle(post, lang);
                     return (
-                      <tr key={post.key} className="hover:bg-white/[0.03] transition-colors">
+                      <tr
+                        key={post.key}
+                        onClick={() => onOpenPost(post)}
+                        className="hover:bg-white/[0.03] transition-colors cursor-pointer"
+                      >
                         <td className="py-2.5 px-4 max-w-md">
                           <button
                             type="button"
-                            onClick={() => onOpenPost(post)}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onOpenPost(post);
+                            }}
                             className="w-full text-start group cursor-pointer flex items-center gap-3"
                           >
                             {post.mediaMeta?.thumbUrl && (
@@ -280,12 +319,12 @@ export const ShareDetectiveTab: React.FC<ShareDetectiveTabProps> = React.memo(({
                               <div className="flex items-center gap-1.5 text-[11px] text-[#7f91a4] font-mono-num">
                                 <span dir="ltr">#{post.primaryId}</span>
                                 <span aria-hidden="true">·</span>
-                                <span className="capitalize">{post.mediaKind}</span>
+                                <span>{t.mediaKindLabels[post.mediaKind] ?? post.mediaKind}</span>
                                 {post.isAlbum && (
                                   <>
                                     <span aria-hidden="true">·</span>
                                     <span className="inline-flex items-center gap-1 text-[#5eb5f7]">
-                                      <Layers className="w-3 h-3" />
+                                      <Layers className="w-3 h-3" aria-hidden="true" />
                                       {post.albumChildren.length} {t.itemsLabel}
                                     </span>
                                   </>
@@ -297,18 +336,17 @@ export const ShareDetectiveTab: React.FC<ShareDetectiveTabProps> = React.memo(({
                                   </>
                                 )}
                               </div>
-                              <div className="mt-0.5 text-[13px] font-medium text-[#f5f7fa] group-hover:text-[#5eb5f7] truncate">
-                                {getPostDisplayTitle(post, lang)}
+                              <div
+                                className="mt-0.5 text-[13px] font-medium text-[#f5f7fa] group-hover:text-[#5eb5f7] truncate"
+                                title={displayTitle}
+                              >
+                                {displayTitle}
                               </div>
                             </div>
                           </button>
                         </td>
                         <td className="py-2.5 px-3 text-xs text-[#8B9BB0] font-mono-num whitespace-nowrap">
-                          {new Date(post.date).toLocaleDateString(lang === 'fa' ? 'fa-IR' : 'en-US', {
-                            month: 'short',
-                            day: 'numeric',
-                            timeZone: 'UTC',
-                          })}
+                          {formatShortDate(post.date, lang)}
                         </td>
                         <td className="py-2.5 px-3 text-end text-xs font-mono-num whitespace-nowrap">
                           <span dir="ltr" className="inline-flex items-baseline gap-1.5">

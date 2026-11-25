@@ -1,7 +1,43 @@
 import { useEffect, type RefObject } from 'react';
 
 const FOCUSABLE_SELECTOR =
-  'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+  'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+let openDialogCount = 0;
+let savedBodyOverflow = '';
+
+function isFocusableVisible(el: HTMLElement): boolean {
+  if (el.hasAttribute('hidden') || el.closest('[hidden]')) return false;
+  if (el.getClientRects().length === 0) return false;
+  const style = window.getComputedStyle(el);
+  return style.visibility !== 'hidden' && style.display !== 'none';
+}
+
+function getVisibleFocusables(container: HTMLElement): HTMLElement[] {
+  return Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)).filter(
+    isFocusableVisible,
+  );
+}
+
+function lockBodyScroll(): void {
+  if (openDialogCount === 0) {
+    savedBodyOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+  }
+  openDialogCount += 1;
+  document.body.dataset.dialogCount = String(openDialogCount);
+}
+
+function unlockBodyScroll(): void {
+  openDialogCount = Math.max(0, openDialogCount - 1);
+  if (openDialogCount === 0) {
+    delete document.body.dataset.dialogCount;
+    document.body.style.overflow = savedBodyOverflow;
+    savedBodyOverflow = '';
+  } else {
+    document.body.dataset.dialogCount = String(openDialogCount);
+  }
+}
 
 export function useDialogAccessibility(
   open: boolean,
@@ -10,14 +46,14 @@ export function useDialogAccessibility(
   useEffect(() => {
     if (!open) return;
 
-    const previousFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    const prevOverflow = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
+    const previousFocused =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    lockBodyScroll();
 
-    const container = containerRef.current;
     const focusTimer = window.setTimeout(() => {
+      const container = containerRef.current;
       if (!container) return;
-      const focusables = container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR);
+      const focusables = getVisibleFocusables(container);
       const first = focusables[0] ?? container;
       if (!container.contains(document.activeElement)) {
         first.focus({ preventScroll: true });
@@ -25,8 +61,9 @@ export function useDialogAccessibility(
     }, 10);
 
     const onKeyDown = (e: KeyboardEvent) => {
+      const container = containerRef.current;
       if (e.key !== 'Tab' || !container) return;
-      const focusables = Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR));
+      const focusables = getVisibleFocusables(container);
       if (focusables.length === 0) {
         e.preventDefault();
         return;
@@ -49,8 +86,10 @@ export function useDialogAccessibility(
     return () => {
       window.clearTimeout(focusTimer);
       document.removeEventListener('keydown', onKeyDown);
-      document.body.style.overflow = prevOverflow;
-      previousFocused?.focus?.({ preventScroll: true });
+      unlockBodyScroll();
+      if (previousFocused?.isConnected) {
+        previousFocused.focus({ preventScroll: true });
+      }
     };
   }, [open, containerRef]);
 }

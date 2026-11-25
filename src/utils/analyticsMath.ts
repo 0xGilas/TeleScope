@@ -149,9 +149,12 @@ export function groupAlbumPosts(
   for (const entry of resultOrder) {
     if (entry.kind === 'single') {
       const msg = entry.msg;
-      const reactionsCount = msg.reactions.reduce((sum, r) => sum + r.count, 0);
-      const views = Math.max(0, msg.views);
-      const forwards = Math.max(0, msg.forwards);
+      let reactionsCount = 0;
+      for (let i = 0; i < msg.reactions.length; i += 1) {
+        reactionsCount += msg.reactions[i].count;
+      }
+      const views = msg.views > 0 ? msg.views : 0;
+      const forwards = msg.forwards > 0 ? msg.forwards : 0;
       const shareRatePercent = views > 0 ? Number(((forwards / views) * 100).toFixed(2)) : 0;
       const engagementRatePercent =
         views > 0 ? Number((((forwards + reactionsCount + msg.replies) / views) * 100).toFixed(2)) : 0;
@@ -186,37 +189,62 @@ export function groupAlbumPosts(
       });
     } else {
       const items = albumMap.get(entry.groupId)!;
-      const sortedItems = [...items].sort((a, b) => a.id - b.id);
-      const primary = sortedItems.find((i) => i.text.trim().length > 0) ?? sortedItems[0];
+      items.sort((a, b) => a.id - b.id);
 
-      const children: AlbumChildItem[] = sortedItems.map((item) => ({
-        id: item.id,
-        mediaKind: item.mediaKind,
-        views: Math.max(0, item.views),
-        forwards: Math.max(0, item.forwards),
-        caption: item.text.trim() || undefined,
-        mediaMeta: item.mediaMeta,
-      }));
+      let primary: RawChannelMessage | undefined;
+      let fallbackMediaMeta: PostMediaMeta | undefined;
+      let views = 0;
+      let maxForwards = 0;
+      let sumForwards = 0;
+      let replies = 0;
+      let inRecentWindow = false;
 
-      const primaryMediaMeta: PostMediaMeta | undefined =
-        primary.mediaMeta ?? sortedItems.find((i) => Boolean(i.mediaMeta))?.mediaMeta;
-
-      const views = Math.max(...sortedItems.map((i) => Math.max(0, i.views)));
-      const maxForwards = Math.max(...sortedItems.map((i) => Math.max(0, i.forwards)));
-      const sumForwards = sortedItems.reduce((acc, i) => acc + Math.max(0, i.forwards), 0);
-      const replies = Math.max(...sortedItems.map((i) => Math.max(0, i.replies)));
-
+      const children: AlbumChildItem[] = new Array(items.length);
+      const messageIds: number[] = new Array(items.length);
       const reactionTotals = new Map<string, number>();
-      for (const item of sortedItems) {
-        for (const r of item.reactions) {
-          reactionTotals.set(r.emoji, Math.max(reactionTotals.get(r.emoji) ?? 0, r.count));
+
+      for (let i = 0; i < items.length; i += 1) {
+        const item = items[i];
+        const itemViews = item.views > 0 ? item.views : 0;
+        const itemForwards = item.forwards > 0 ? item.forwards : 0;
+        const itemReplies = item.replies > 0 ? item.replies : 0;
+
+        if (!primary && item.text.trim().length > 0) primary = item;
+        if (!fallbackMediaMeta && item.mediaMeta) fallbackMediaMeta = item.mediaMeta;
+        if (itemViews > views) views = itemViews;
+        if (itemForwards > maxForwards) maxForwards = itemForwards;
+        sumForwards += itemForwards;
+        if (itemReplies > replies) replies = itemReplies;
+        if (!inRecentWindow && recentPostIds.has(item.id)) inRecentWindow = true;
+
+        messageIds[i] = item.id;
+        children[i] = {
+          id: item.id,
+          mediaKind: item.mediaKind,
+          views: itemViews,
+          forwards: itemForwards,
+          caption: item.text.trim() || undefined,
+          mediaMeta: item.mediaMeta,
+        };
+
+        for (let j = 0; j < item.reactions.length; j += 1) {
+          const r = item.reactions[j];
+          const prevCount = reactionTotals.get(r.emoji) ?? 0;
+          if (r.count > prevCount) {
+            reactionTotals.set(r.emoji, r.count);
+          }
         }
       }
-      const mergedReactions = Array.from(reactionTotals.entries()).map(([emoji, count]) => ({
-        emoji,
-        count,
-      }));
-      const reactionsCount = mergedReactions.reduce((sum, r) => sum + r.count, 0);
+
+      const resolvedPrimary = primary ?? items[0];
+      const primaryMediaMeta = resolvedPrimary.mediaMeta ?? fallbackMediaMeta;
+
+      const mergedReactions: Array<{ emoji: string; count: number }> = [];
+      let reactionsCount = 0;
+      for (const [emoji, count] of reactionTotals.entries()) {
+        mergedReactions.push({ emoji, count });
+        reactionsCount += count;
+      }
 
       const shareRatePercent = views > 0 ? Number(((maxForwards / views) * 100).toFixed(2)) : 0;
       const engagementRatePercent =
@@ -224,13 +252,13 @@ export function groupAlbumPosts(
 
       posts.push({
         key: `album:${entry.groupId}`,
-        primaryId: primary.id,
-        messageIds: sortedItems.map((i) => i.id),
+        primaryId: resolvedPrimary.id,
+        messageIds,
         groupedId: entry.groupId,
         isAlbum: true,
         albumChildren: children,
-        date: primary.date,
-        text: primary.text || `Media Album (${sortedItems.length} items)`,
+        date: resolvedPrimary.date,
+        text: resolvedPrimary.text || `Media Album (${items.length} items)`,
         mediaKind: 'album',
         mediaMeta: primaryMediaMeta,
         views,
@@ -247,8 +275,8 @@ export function groupAlbumPosts(
         deltaShares: 0,
         deltaReactions: 0,
         evergreenShareRatio: 0,
-        permalink: primary.permalink,
-        inRecentWindow: sortedItems.some((i) => recentPostIds.has(i.id)),
+        permalink: resolvedPrimary.permalink,
+        inRecentWindow,
       });
     }
   }
@@ -309,6 +337,36 @@ export function buildSnapshotFromPosts(
   };
 }
 
+const dailyBreakdownIndexCache = new WeakMap<
+  MessageDailyActivity[],
+  { length: number; byDate: Map<string, MessageDailyActivity> }
+>();
+
+function findDailyBreakdownRow(
+  dailyBreakdown: MessageDailyActivity[],
+  dateKey: string,
+): MessageDailyActivity | undefined {
+  if (dailyBreakdown.length <= 16) {
+    for (let i = 0; i < dailyBreakdown.length; i += 1) {
+      if (dailyBreakdown[i].dateKey === dateKey) return dailyBreakdown[i];
+    }
+    return undefined;
+  }
+  let cached = dailyBreakdownIndexCache.get(dailyBreakdown);
+  if (!cached || cached.length !== dailyBreakdown.length) {
+    const byDate = new Map<string, MessageDailyActivity>();
+    for (let i = 0; i < dailyBreakdown.length; i += 1) {
+      const row = dailyBreakdown[i];
+      if (!byDate.has(row.dateKey)) {
+        byDate.set(row.dateKey, row);
+      }
+    }
+    cached = { length: dailyBreakdown.length, byDate };
+    dailyBreakdownIndexCache.set(dailyBreakdown, cached);
+  }
+  return cached.byDate.get(dateKey);
+}
+
 /**
  * Exact Per-Date Post Attribution Engine:
  * Combines Telegram's `stats.getMessageStats` daily timeline (`views` + `shares` per message),
@@ -332,11 +390,23 @@ export function attributeDateFromMessageStats(params: {
     publicForwardsByPost,
   } = params;
 
+  const dayStartMs = Date.parse(`${dateKey}T00:00:00.000Z`);
+  const dayEndMs = dayStartMs + 86400_000;
+  const hasValidRange = Number.isFinite(dayStartMs);
+
   let graphTotalViews = 0;
   let graphTotalShares = 0;
 
   if (interactionsGraph) {
-    const dayIndex = interactionsGraph.timestamps.findIndex((ts) => formatDateKey(ts) === dateKey);
+    let dayIndex = -1;
+    const timestamps = interactionsGraph.timestamps;
+    for (let i = 0; i < timestamps.length; i += 1) {
+      const ts = timestamps[i];
+      if (hasValidRange ? ts >= dayStartMs && ts < dayEndMs : formatDateKey(ts) === dateKey) {
+        dayIndex = i;
+        break;
+      }
+    }
     if (dayIndex !== -1) {
       const viewsSeries =
         interactionsGraph.series.find((s) => /view/i.test(s.label) || s.key === 'y0') ??
@@ -349,58 +419,70 @@ export function attributeDateFromMessageStats(params: {
     }
   }
 
-  const recentPostsSharesSum = posts
-    .filter((p) => p.inRecentWindow && formatDateKey(p.date) === dateKey)
-    .reduce((sum, p) => sum + p.forwards, 0);
-
+  let recentPostsSharesSum = 0;
   const contributionMap = new Map<string, AttributedPostContribution>();
+  const postByKey = new Map<string, PostRecord>();
+  const unscannedSameDayPosts: PostRecord[] = [];
 
-  // 1) Primary source: per-message `stats.getMessageStats` daily breakdown (has BOTH views & shares!)
-  for (const post of posts) {
-    const detailed = postStatsByPost[post.key];
-    if (!detailed) continue;
-    const dailyBreakdown =
-      detailed.dailyBreakdown.length > 0
-        ? detailed.dailyBreakdown
-        : detailed.viewsGraph
-          ? extractDailyActivityFromGraph(detailed.viewsGraph, post.date)
-          : [];
-    const dayRow = dailyBreakdown.find((d) => d.dateKey === dateKey);
-    if (!dayRow || (dayRow.views <= 0 && dayRow.shares <= 0)) continue;
+  // Single pass over `posts`: build index, recent-window sum, primary `message_stats`, and collect same-day fallbacks
+  for (let i = 0; i < posts.length; i += 1) {
+    const post = posts[i];
+    postByKey.set(post.key, post);
 
-    // Any post published before this date MUST have shares on this date to be attributed!
-    // Older posts with 0 shares on this date are baseline carryover / historical views and do not belong in this date's ledger.
-    const isOldPost = formatDateKey(post.date) < dateKey;
-    if (isOldPost && dayRow.shares === 0) {
-      continue;
+    const isPublishedOnDate = hasValidRange
+      ? post.date >= dayStartMs && post.date < dayEndMs
+      : formatDateKey(post.date) === dateKey;
+    const isOldPost = hasValidRange ? post.date < dayStartMs : formatDateKey(post.date) < dateKey;
+
+    if (post.inRecentWindow && isPublishedOnDate) {
+      recentPostsSharesSum += post.forwards;
     }
 
-    contributionMap.set(post.key, {
-      post,
-      viewsOnDate: dayRow.views,
-      sharesOnDate: dayRow.shares,
-      shareContributionPct: 0,
-      viewContributionPct: 0,
-      source: 'message_stats',
-    });
+    const detailed = postStatsByPost[post.key];
+    if (detailed) {
+      const dailyBreakdown =
+        detailed.dailyBreakdown.length > 0
+          ? detailed.dailyBreakdown
+          : detailed.viewsGraph
+            ? extractDailyActivityFromGraph(detailed.viewsGraph, post.date)
+            : [];
+      const dayRow = findDailyBreakdownRow(dailyBreakdown, dateKey);
+      if (!dayRow || (dayRow.views <= 0 && dayRow.shares <= 0)) continue;
+
+      // Any post published before this date MUST have shares on this date to be attributed!
+      // Older posts with 0 shares on this date are baseline carryover / historical views and do not belong in this date's ledger.
+      if (isOldPost && dayRow.shares === 0) continue;
+
+      contributionMap.set(post.key, {
+        post,
+        viewsOnDate: dayRow.views,
+        sharesOnDate: dayRow.shares,
+        shareContributionPct: 0,
+        viewContributionPct: 0,
+        source: 'message_stats',
+      });
+    } else if (isPublishedOnDate && (post.views > 0 || post.forwards > 0)) {
+      unscannedSameDayPosts.push(post);
+    }
   }
 
   // 2) Secondary source: local snapshot deltas for any post
-  const postByKey = new Map(posts.map((p) => [p.key, p]));
-  for (const d of dailyDeltas) {
+  const deltaEndMs = dayEndMs - 1;
+  for (let i = 0; i < dailyDeltas.length; i += 1) {
+    const d = dailyDeltas[i];
     if (d.dateKey !== dateKey) continue;
     const post = postByKey.get(d.postKey);
     if (!post) continue;
 
     // Discard corrupted historical deltas where an older post (published >48h before delta date)
     // was attributed lifetime forwards due to a missing baseline in older versions
-    const deltaEndMs = Date.parse(`${d.dateKey}T23:59:59.999Z`);
-    if (deltaEndMs - post.date > 48 * 3600_000 && d.deltaShares >= post.forwards && post.forwards > 0) {
+    const endMs = hasValidRange ? deltaEndMs : Date.parse(`${d.dateKey}T23:59:59.999Z`);
+    if (endMs - post.date > 48 * 3600_000 && d.deltaShares >= post.forwards && post.forwards > 0) {
       continue;
     }
 
     // Older posts must have positive deltaShares on this date to be attributed
-    const isOldPost = formatDateKey(post.date) < dateKey;
+    const isOldPost = hasValidRange ? post.date < dayStartMs : formatDateKey(post.date) < dateKey;
     if (isOldPost && d.deltaShares <= 0) {
       continue;
     }
@@ -427,8 +509,9 @@ export function attributeDateFromMessageStats(params: {
   for (const [postKey, forwards] of Object.entries(publicForwardsByPost)) {
     const post = postByKey.get(postKey);
     if (!post) continue;
-    for (const fwd of forwards) {
-      if (formatDateKey(fwd.date) === dateKey) {
+    for (let i = 0; i < forwards.length; i += 1) {
+      const fwd = forwards[i];
+      if (hasValidRange ? fwd.date >= dayStartMs && fwd.date < dayEndMs : formatDateKey(fwd.date) === dateKey) {
         publicForwardsOnDate.push({ post, forward: fwd });
         const existing = contributionMap.get(postKey);
         if (existing) {
@@ -451,11 +534,8 @@ export function attributeDateFromMessageStats(params: {
   }
 
   // 4) Fallback attribution for unscanned posts published strictly on this UTC date
-  for (const post of posts) {
-    if (post.views <= 0 && post.forwards <= 0) continue;
-    if (formatDateKey(post.date) !== dateKey) continue;
-    if (postStatsByPost[post.key]) continue;
-
+  for (let i = 0; i < unscannedSameDayPosts.length; i += 1) {
+    const post = unscannedSameDayPosts[i];
     const existing = contributionMap.get(post.key);
     if (!existing) {
       contributionMap.set(post.key, {
@@ -480,13 +560,18 @@ export function attributeDateFromMessageStats(params: {
     (a, b) => b.sharesOnDate - a.sharesOnDate || b.viewsOnDate - a.viewsOnDate,
   );
 
-  const attributedViewsSum = contributions.reduce((s, c) => s + c.viewsOnDate, 0);
-  const attributedSharesSum = contributions.reduce((s, c) => s + c.sharesOnDate, 0);
+  let attributedViewsSum = 0;
+  let attributedSharesSum = 0;
+  for (let i = 0; i < contributions.length; i += 1) {
+    attributedViewsSum += contributions[i].viewsOnDate;
+    attributedSharesSum += contributions[i].sharesOnDate;
+  }
 
   const shareDenom = Math.max(1, graphTotalShares || attributedSharesSum);
   const viewDenom = Math.max(1, graphTotalViews || attributedViewsSum);
 
-  for (const item of contributions) {
+  for (let i = 0; i < contributions.length; i += 1) {
+    const item = contributions[i];
     item.shareContributionPct = Math.min(100, Math.round((item.sharesOnDate / shareDenom) * 100));
     item.viewContributionPct = Math.min(100, Math.round((item.viewsOnDate / viewDenom) * 100));
   }
@@ -505,7 +590,8 @@ export function attributeDateFromMessageStats(params: {
 }
 
 export function computeChannelBenchmarks(posts: PostRecord[]): ChannelBenchmarks {
-  if (posts.length === 0) {
+  const n = posts.length;
+  if (n === 0) {
     return {
       medianViews: 0,
       p90Views: 0,
@@ -516,31 +602,47 @@ export function computeChannelBenchmarks(posts: PostRecord[]): ChannelBenchmarks
     };
   }
 
-  const sortedViews = [...posts].map((p) => p.views).sort((a, b) => a - b);
-  const sortedRates = [...posts].map((p) => p.shareRatePercent).sort((a, b) => a - b);
+  const sortedViews = new Array<number>(n);
+  const sortedRates = new Array<number>(n);
+  let totalShares = 0;
+  let totalPublicShares = 0;
+  let latestDate = 0;
 
-  const mid = Math.floor(sortedViews.length / 2);
+  for (let i = 0; i < n; i += 1) {
+    const p = posts[i];
+    sortedViews[i] = p.views;
+    sortedRates[i] = p.shareRatePercent;
+    totalShares += p.forwards;
+    totalPublicShares += p.publicSharesCount;
+    if (p.date > latestDate) latestDate = p.date;
+  }
+
+  sortedViews.sort((a, b) => a - b);
+  sortedRates.sort((a, b) => a - b);
+
+  const mid = Math.floor(n / 2);
   const medianViews =
-    sortedViews.length % 2 === 0
+    n % 2 === 0
       ? Math.round((sortedViews[mid - 1] + sortedViews[mid]) / 2)
       : sortedViews[mid];
 
-  const p90Idx = Math.min(sortedViews.length - 1, Math.floor(sortedViews.length * 0.9));
+  const p90Idx = Math.min(n - 1, Math.floor(n * 0.9));
   const p90Views = sortedViews[p90Idx];
 
   const medianShareRate =
-    sortedRates.length % 2 === 0
+    n % 2 === 0
       ? Number(((sortedRates[mid - 1] + sortedRates[mid]) / 2).toFixed(2))
       : sortedRates[mid];
 
-  const totalShares = posts.reduce((s, p) => s + p.forwards, 0);
-  const totalPublicShares = posts.reduce((s, p) => s + p.publicSharesCount, 0);
   const totalPrivateShares = Math.max(0, totalShares - totalPublicShares);
 
-  const latestDate = posts.reduce((max, p) => (p.date > max ? p.date : max), 0);
-  const olderShares = posts
-    .filter((p) => latestDate - p.date > 7 * 86400_000)
-    .reduce((s, p) => s + p.forwards, 0);
+  const cutoffMs = latestDate - 7 * 86400_000;
+  let olderShares = 0;
+  for (let i = 0; i < n; i += 1) {
+    if (posts[i].date < cutoffMs) {
+      olderShares += posts[i].forwards;
+    }
+  }
   const evergreenSharePercent =
     totalShares > 0 ? Math.round((olderShares / totalShares) * 100) : 0;
 
@@ -576,30 +678,38 @@ export function computeWeekdayHourMatrix(
   posts: PostRecord[],
   timezoneOffsetMinutes = 0,
 ): WeekdayHourCell[] {
-  const buckets = new Map<string, PostRecord[]>();
+  const counts = new Int32Array(42);
+  const sumViews = new Float64Array(42);
+  const sumRates = new Float64Array(42);
   const offsetMs = timezoneOffsetMinutes * 60_000;
-  for (const post of posts) {
-    const d = new Date(post.date + offsetMs);
-    const weekday = d.getUTCDay();
-    const hourBlock = Math.floor(d.getUTCHours() / 4); // 6 blocks of 4h
-    const key = `${weekday}:${hourBlock}`;
-    const arr = buckets.get(key);
-    if (arr) arr.push(post);
-    else buckets.set(key, [post]);
+
+  for (let i = 0; i < posts.length; i += 1) {
+    const post = posts[i];
+    const shiftedMs = Math.trunc(post.date + offsetMs);
+    if (!Number.isFinite(shiftedMs)) continue;
+    const dayIndex = Math.floor(shiftedMs / 86_400_000);
+    // Unix epoch (1970-01-01) was Thursday (weekday = 4)
+    const weekday = (((dayIndex + 4) % 7) + 7) % 7;
+    const hourBlock = Math.floor((shiftedMs - dayIndex * 86_400_000) / 14_400_000);
+    const idx = weekday * 6 + hourBlock;
+    counts[idx] += 1;
+    sumViews[idx] += post.views;
+    sumRates[idx] += post.shareRatePercent;
   }
 
-  const cells: WeekdayHourCell[] = [];
+  const cells: WeekdayHourCell[] = new Array(42);
   for (let weekday = 0; weekday < 7; weekday += 1) {
+    const rowOffset = weekday * 6;
     for (let hourBlock = 0; hourBlock < 6; hourBlock += 1) {
-      const items = buckets.get(`${weekday}:${hourBlock}`) ?? [];
-      const postCount = items.length;
-      const avgViews =
-        postCount > 0 ? Math.round(items.reduce((s, i) => s + i.views, 0) / postCount) : 0;
-      const avgShareRate =
-        postCount > 0
-          ? Number((items.reduce((s, i) => s + i.shareRatePercent, 0) / postCount).toFixed(2))
-          : 0;
-      cells.push({ weekday, hourBlock, postCount, avgShareRate, avgViews });
+      const idx = rowOffset + hourBlock;
+      const postCount = counts[idx];
+      cells[idx] = {
+        weekday,
+        hourBlock,
+        postCount,
+        avgShareRate: postCount > 0 ? Number((sumRates[idx] / postCount).toFixed(2)) : 0,
+        avgViews: postCount > 0 ? Math.round(sumViews[idx] / postCount) : 0,
+      };
     }
   }
   return cells;

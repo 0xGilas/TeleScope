@@ -87,7 +87,8 @@ export type WorkerCommand =
       postKey: string;
       messageIds: number[];
     }
-  | { id: string; type: 'abort_attribution' };
+  | { id: string; type: 'abort_attribution' }
+  | { id: string; type: 'abort_channel_sync' };
 
 export type WorkerEvent =
   | { type: 'rpc_ok'; id: string; payload: unknown }
@@ -112,6 +113,86 @@ function postWorkerEvent(event: WorkerEvent) {
   self.postMessage(event);
 }
 
+const TELEGRAM_HOST_REGEX = /^(?:[a-zA-Z0-9-]+\.)?web\.telegram\.org$/;
+const utf8Encoder = new TextEncoder();
+const utf8Decoder = new TextDecoder();
+
+function toHex(input: string): string {
+  const bytes = utf8Encoder.encode(input);
+  let hex = '';
+  for (let i = 0; i < bytes.length; i += 1) {
+    hex += bytes[i].toString(16).padStart(2, '0');
+  }
+  return hex;
+}
+
+function truncateUtf8Bytes(input: string, maxBytes: number): string {
+  const bytes = utf8Encoder.encode(input);
+  if (bytes.length <= maxBytes) return input;
+  return utf8Decoder.decode(bytes.subarray(0, maxBytes)).replace(/�+$/, '');
+}
+
+function safeCloseWs(ws: WebSocket, code?: number, reason?: string): void {
+  const truncated =
+    typeof reason === 'string' && reason.length > 0
+      ? truncateUtf8Bytes(reason, 123)
+      : undefined;
+  try {
+    if (typeof code === 'number') {
+      if (truncated !== undefined) ws.close(code, truncated);
+      else ws.close(code);
+    } else {
+      ws.close();
+    }
+  } catch {
+    try {
+      if (truncated !== undefined) ws.close(1000, truncated);
+      else ws.close();
+    } catch {
+      // ignore errors on closing/closed socket
+    }
+  }
+}
+
+function validateTelegramTargetUrl(rawUrl: string | URL): URL {
+  const parsed = rawUrl instanceof URL ? rawUrl : new URL(rawUrl);
+  if (
+    parsed.protocol !== 'wss:' ||
+    !TELEGRAM_HOST_REGEX.test(parsed.hostname) ||
+    (parsed.port !== '' && parsed.port !== '443') ||
+    parsed.username !== '' ||
+    parsed.password !== ''
+  ) {
+    throw new Error('Disallowed or invalid Telegram WebSocket target URL');
+  }
+  return parsed;
+}
+
+function validateCfRelayUrl(rawRelayUrl: string): URL {
+  const parsed = new URL(rawRelayUrl.trim());
+  if (
+    parsed.protocol !== 'wss:' ||
+    (parsed.port !== '' && parsed.port !== '443') ||
+    parsed.username !== '' ||
+    parsed.password !== ''
+  ) {
+    throw new Error('Invalid Cloudflare Worker relay URL (requires wss:// on default port without credentials)');
+  }
+  return parsed;
+}
+
+function validateSocksBridgeUrl(rawBridgeUrl: string): URL {
+  const parsed = new URL(rawBridgeUrl.trim());
+  if (
+    (parsed.protocol !== 'ws:' && parsed.protocol !== 'wss:') ||
+    parsed.username !== '' ||
+    parsed.password !== ''
+  ) {
+    throw new Error('Invalid SOCKS5 bridge WebSocket URL');
+  }
+  return parsed;
+}
+
 /**
  * Creates a WebSocket constructor compatible with `@mtcute/web`'s WebSocketTransport({ ws })
  * supporting:
@@ -125,22 +206,31 @@ function createTransportWebSocket(network: NetworkConfig): WebSocketConstructor 
   }
 
   if (network.mode === 'cf-relay') {
-    const relayBase = network.cfRelayUrl.trim().replace(/\/+$/, '');
+    const relayParsed = validateCfRelayUrl(network.cfRelayUrl);
     const relayToken = (network.cfRelayToken || '').trim();
     class RelayWebSocket extends WebSocket {
       constructor(url: string | URL, protocols?: string | string[]) {
-        const target = typeof url === 'string' ? url : url.toString();
-        const sep = relayBase.includes('?') ? '&' : '?';
-        const tokenParam = relayToken ? `&token=${encodeURIComponent(relayToken)}` : '';
-        const wrappedUrl = `${relayBase}${sep}target=${encodeURIComponent(target)}${tokenParam}`;
-        super(wrappedUrl, protocols);
+        const targetParsed = validateTelegramTargetUrl(url);
+        const relayUrl = new URL(relayParsed.toString());
+        relayUrl.searchParams.set('target', targetParsed.toString());
+
+        if (relayToken) {
+          const baseProtocols = Array.isArray(protocols)
+            ? protocols.filter((p) => p !== 'binary')
+            : typeof protocols === 'string' && protocols.length > 0 && protocols !== 'binary'
+              ? [protocols]
+              : [];
+          super(relayUrl.toString(), ['binary', ...baseProtocols, `tg-auth.${toHex(relayToken)}`]);
+        } else {
+          super(relayUrl.toString(), protocols);
+        }
       }
     }
     return RelayWebSocket as unknown as WebSocketConstructor;
   }
 
   // SOCKS5 via Local Bridge
-  const bridgeUrl = network.socks5.bridgeUrl.trim() || 'ws://127.0.0.1:8787';
+  const bridgeUrl = validateSocksBridgeUrl(network.socks5.bridgeUrl.trim() || 'ws://127.0.0.1:8787').toString();
   const bridgeToken = (network.socks5.bridgeToken || '').trim() || undefined;
   const socksCfg = {
     host: network.socks5.host.trim(),
@@ -176,7 +266,7 @@ function createTransportWebSocket(network: NetworkConfig): WebSocketConstructor 
 
     constructor(url: string | URL, protocols?: string | string[]) {
       super();
-      const targetUrl = typeof url === 'string' ? url : url.toString();
+      const targetUrl = validateTelegramTargetUrl(url).toString();
       this.url = targetUrl;
 
       this._ws = new WebSocket(bridgeUrl, protocols);
@@ -215,7 +305,7 @@ function createTransportWebSocket(network: NetworkConfig): WebSocketConstructor 
                 const errEv = new Event('error');
                 this.dispatchEvent(errEv);
                 this.onerror?.call(this as unknown as WebSocket, errEv);
-                this._ws.close(1011, ctrl.error || 'SOCKS5 bridge error');
+                safeCloseWs(this._ws, 1011, ctrl.error || 'SOCKS5 bridge error');
                 return;
               }
             } catch {
@@ -274,7 +364,7 @@ function createTransportWebSocket(network: NetworkConfig): WebSocketConstructor 
 
     close(code?: number, reason?: string): void {
       this._readyState = 2;
-      this._ws.close(code, reason);
+      safeCloseWs(this._ws, code, reason);
     }
   }
 
@@ -285,6 +375,8 @@ let tgClient: TelegramClient | null = null;
 let qrAbortController: AbortController | null = null;
 let pendingQrPasswordResolve: ((pwd: string) => void) | null = null;
 let attributionAborted = false;
+let clientGeneration = 0;
+let channelSyncGeneration = 0;
 
 const channelAvatarCache = new Map<number, string>();
 const mediaPreviewCache = new Map<string, PostMediaPreview>();
@@ -425,6 +517,7 @@ async function downloadChannelSmallAvatar(
 async function hydrateChannelAvatarsInBackground(
   client: TelegramClient,
   targets: Array<{ id: number; photo: ChatPhoto | null }>,
+  expectedClientGen: number,
 ): Promise<void> {
   const pending = targets.filter((t) => t.photo && !channelAvatarCache.has(t.id));
   if (pending.length === 0) return;
@@ -432,6 +525,7 @@ async function hydrateChannelAvatarsInBackground(
   const updates: Record<number, string> = {};
   const concurrency = 4;
   for (let i = 0; i < pending.length; i += concurrency) {
+    if (expectedClientGen !== clientGeneration || tgClient !== client) return;
     const batch = pending.slice(i, i + concurrency);
     const results = await Promise.all(
       batch.map(async (item) => ({
@@ -439,11 +533,13 @@ async function hydrateChannelAvatarsInBackground(
         url: await downloadChannelSmallAvatar(client, item.id, item.photo),
       })),
     );
+    if (expectedClientGen !== clientGeneration || tgClient !== client) return;
     for (const r of results) {
       if (r.url) updates[r.id] = r.url;
     }
   }
 
+  if (expectedClientGen !== clientGeneration || tgClient !== client) return;
   if (Object.keys(updates).length > 0) {
     postWorkerEvent({ type: 'channel_avatars_updated', avatars: updates });
   }
@@ -672,6 +768,10 @@ async function ensureClientInitialized(
   network: NetworkConfig,
   sessionString?: string,
 ): Promise<{ authorized: boolean; user?: TelegramUserSummary; reason?: string }> {
+  clientGeneration += 1;
+  channelSyncGeneration += 1;
+  attributionAborted = true;
+
   if (tgClient) {
     try {
       await tgClient.disconnect();
@@ -860,6 +960,9 @@ async function handleCommand(cmd: WorkerCommand): Promise<unknown> {
     }
 
     case 'logout': {
+      clientGeneration += 1;
+      channelSyncGeneration += 1;
+      attributionAborted = true;
       channelAvatarCache.clear();
       mediaPreviewCache.clear();
       if (tgClient) {
@@ -879,9 +982,14 @@ async function handleCommand(cmd: WorkerCommand): Promise<unknown> {
 
     case 'get_channels': {
       if (!tgClient) throw new Error('Client not initialized');
+      const client = tgClient;
+      const expectedClientGen = clientGeneration;
       const channels: ChannelSummary[] = [];
       const avatarTargets: Array<{ id: number; photo: ChatPhoto | null }> = [];
-      for await (const dialog of tgClient.iterDialogs({ limit: 100 })) {
+      for await (const dialog of client.iterDialogs({ limit: 100 })) {
+        if (expectedClientGen !== clientGeneration || tgClient !== client) {
+          throw new Error('Client session changed');
+        }
         const peer = dialog.peer;
         if (peer.type === 'chat' && peer.chatType === 'channel' && (peer.isCreator || peer.isAdmin)) {
           const cachedAvatar = channelAvatarCache.get(peer.id);
@@ -903,17 +1011,26 @@ async function handleCommand(cmd: WorkerCommand): Promise<unknown> {
         }
       }
       // Download sharp 160x160 channel avatars concurrently without blocking dialog list render
-      void hydrateChannelAvatarsInBackground(tgClient, avatarTargets);
+      void hydrateChannelAvatarsInBackground(client, avatarTargets, expectedClientGen);
       return channels;
+    }
+
+    case 'abort_channel_sync': {
+      channelSyncGeneration += 1;
+      return { aborted: true };
     }
 
     case 'fetch_channel_analytics': {
       if (!tgClient) throw new Error('Client not initialized');
       const client = tgClient;
+      const syncGen = ++channelSyncGeneration;
       const [fullChat, chat] = await Promise.all([
         client.getFullChat(cmd.channelId),
         client.getChat(cmd.channelId),
       ]);
+      if (syncGen !== channelSyncGeneration || tgClient !== client) {
+        throw new Error('CHANNEL_SYNC_ABORTED');
+      }
       const rawFull = fullChat.full;
       const statsDc = rawFull._ === 'channelFull' ? rawFull.statsDc : undefined;
       const canViewStats = fullChat.canViewStats;
@@ -1007,6 +1124,9 @@ async function handleCommand(cmd: WorkerCommand): Promise<unknown> {
         let count = 0;
 
         for await (const msg of client.iterHistory(cmd.channelId, { limit })) {
+          if (syncGen !== channelSyncGeneration || tgClient !== client) {
+            throw new Error('CHANNEL_SYNC_ABORTED');
+          }
           if (msg.isService) continue;
           count += 1;
           let permalink: string | undefined;
@@ -1031,6 +1151,9 @@ async function handleCommand(cmd: WorkerCommand): Promise<unknown> {
           });
 
           if (count % 50 === 0) {
+            if (syncGen !== channelSyncGeneration || tgClient !== client) {
+              throw new Error('CHANNEL_SYNC_ABORTED');
+            }
             postWorkerEvent({ type: 'scan_progress', channelId: cmd.channelId, scannedCount: count });
           }
         }
@@ -1042,6 +1165,10 @@ async function handleCommand(cmd: WorkerCommand): Promise<unknown> {
         fetchHistoryPromise,
         downloadChannelSmallAvatar(client, chat.id, chat.photo),
       ]);
+
+      if (syncGen !== channelSyncGeneration || tgClient !== client) {
+        throw new Error('CHANNEL_SYNC_ABORTED');
+      }
 
       const channelSummary: ChannelSummary = {
         id: chat.id,

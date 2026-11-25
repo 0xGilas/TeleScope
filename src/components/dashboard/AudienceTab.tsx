@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import type { ChannelAnalyticsBundle, LanguageCode, TimezoneMode } from '../../types/analytics';
 import { getTranslations } from '../../i18n/translations';
 import {
@@ -30,6 +30,7 @@ export const AudienceTab: React.FC<AudienceTabProps> = React.memo(({
 }) => {
   const t = getTranslations(lang);
   const { overview, posts } = bundle;
+  const [inspectedCell, setInspectedCell] = useState<{ weekday: number; hourBlock: number } | null>(null);
   const insights = useMemo(() => computeFormatInsights(posts), [posts]);
   const tzOffsetMinutes = useMemo(() => getTimezoneOffsetMinutes(timezoneMode), [timezoneMode]);
   const tzLabel = useMemo(() => getTimezoneBadgeLabel(timezoneMode), [timezoneMode]);
@@ -97,7 +98,7 @@ export const AudienceTab: React.FC<AudienceTabProps> = React.memo(({
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2 px-1">
         <span className="text-xs text-[#8B9BB0]">
-          {lang === 'fa' ? 'منطقه زمانی نمایش ساعات:' : 'Display Timezone:'}
+          {t.displayTimezoneLabel}
         </span>
         <div className="inline-flex items-center gap-1 rounded-lg bg-[#0B0F14] p-1 border border-white/[0.08]">
           {(
@@ -112,8 +113,9 @@ export const AudienceTab: React.FC<AudienceTabProps> = React.memo(({
               <button
                 key={opt.id}
                 type="button"
+                aria-pressed={active}
                 onClick={() => onChangeTimezoneMode(opt.id)}
-                className={`rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors cursor-pointer ${
+                className={`rounded-md min-h-[36px] sm:min-h-0 px-3 py-1.5 sm:px-2.5 sm:py-1 text-[11px] font-medium transition-colors cursor-pointer ${
                   active
                     ? 'bg-[#2AABEE] text-[#090C10] font-semibold'
                     : 'text-[#8B9BB0] hover:text-[#F0F4F8]'
@@ -184,26 +186,48 @@ export const AudienceTab: React.FC<AudienceTabProps> = React.memo(({
                   const cell = matrix[weekday * 6 + hourBlock];
                   const count = cell?.postCount ?? 0;
                   const rate = cell?.avgShareRate ?? 0;
+                  const avgViews = cell?.avgViews ?? 0;
                   const intensity = count > 0 ? Math.max(0.18, rate / maxShareRate) : 0;
                   const isGolden =
                     goldenCell &&
                     goldenCell.weekday === weekday &&
                     goldenCell.hourBlock === hourBlock;
+                  const isInspected =
+                    inspectedCell?.weekday === weekday &&
+                    inspectedCell?.hourBlock === hourBlock;
+                  const cellLabel = t.heatmapCellTooltip(
+                    dayLabel,
+                    slot,
+                    tzLabel,
+                    count,
+                    rate,
+                    avgViews,
+                  );
 
                   return (
-                    <div
+                    <button
                       key={`${weekday}-${hourBlock}`}
-                      title={
-                        count > 0
-                          ? `${dayLabel} ${slot} ${tzLabel}: ${count} post(s), ${rate}% avg share rate, ${cell?.avgViews} avg views`
-                          : `${dayLabel} ${slot} ${tzLabel}: no posts`
+                      type="button"
+                      aria-label={cellLabel}
+                      aria-pressed={isInspected}
+                      title={cellLabel}
+                      onClick={() =>
+                        setInspectedCell((prev) =>
+                          prev?.weekday === weekday && prev?.hourBlock === hourBlock
+                            ? null
+                            : { weekday, hourBlock },
+                        )
                       }
-                      className={`h-11 rounded-lg border flex flex-col items-center justify-center font-mono-num transition-colors ${
+                      onFocus={() => setInspectedCell({ weekday, hourBlock })}
+                      onMouseEnter={() => setInspectedCell({ weekday, hourBlock })}
+                      className={`h-11 rounded-lg border flex flex-col items-center justify-center font-mono-num transition-colors cursor-pointer focus-visible:outline-2 focus-visible:outline-[#2AABEE] ${
                         isGolden
                           ? 'border-[#4dcd5e]'
-                          : count > 0
-                            ? 'border-white/12'
-                            : 'border-white/[0.04] bg-[#111923]/60'
+                          : isInspected
+                            ? 'border-[#2AABEE] ring-1 ring-[#2AABEE]/50'
+                            : count > 0
+                              ? 'border-white/12'
+                              : 'border-white/[0.04] bg-[#111923]/60'
                       }`}
                       style={
                         count > 0
@@ -213,22 +237,46 @@ export const AudienceTab: React.FC<AudienceTabProps> = React.memo(({
                     >
                       {count > 0 ? (
                         <>
-                          <span className="text-[11px] font-semibold text-[#f5f7fa]">
+                          <span className="text-[11px] font-semibold text-[#F0F4F8]">
                             {rate}%
                           </span>
-                          <span className="text-[10px] text-[#f5f7fa]/75">
-                            {formatCompactNumber(cell?.avgViews ?? 0)} ({count})
+                          <span className="text-[10px] text-[#CBD5E1]">
+                            {formatCompactNumber(avgViews)} ({count})
                           </span>
                         </>
                       ) : (
                         <span className="text-[10px] text-[#8596AA]">—</span>
                       )}
-                    </div>
+                    </button>
                   );
                 })}
               </div>
             ))}
           </div>
+        </div>
+
+        <div
+          role="status"
+          aria-live="polite"
+          className="min-h-[34px] rounded-lg border border-white/[0.06] bg-[#0B0F14]/70 px-3 py-1.5 text-xs text-[#CBD5E1] flex items-center"
+        >
+          {(() => {
+            const target = inspectedCell ?? goldenCell;
+            if (!target) return <span>{t.heatmapSub}</span>;
+            const targetCell = matrix[target.weekday * 6 + target.hourBlock];
+            return (
+              <span>
+                {t.heatmapCellTooltip(
+                  weekdayLabels[target.weekday],
+                  HOUR_SLOTS[target.hourBlock],
+                  tzLabel,
+                  targetCell?.postCount ?? 0,
+                  targetCell?.avgShareRate ?? 0,
+                  targetCell?.avgViews ?? 0,
+                )}
+              </span>
+            );
+          })()}
         </div>
       </section>
 
@@ -246,7 +294,7 @@ export const AudienceTab: React.FC<AudienceTabProps> = React.memo(({
         {/* Languages Distribution */}
         <section className="tg-panel rounded-xl p-5 space-y-4">
           <h3 className="text-[13px] font-semibold text-[#5eb5f7]">
-            {lang === 'fa' ? 'زبان مخاطبان کانال' : 'Subscriber Languages'}
+            {t.subscriberLanguagesTitle}
           </h3>
           {langSlices.length === 0 ? (
             <p className="text-xs text-[#8B9BB0]">{t.noLanguageDataMsg}</p>
@@ -289,25 +337,33 @@ export const AudienceTab: React.FC<AudienceTabProps> = React.memo(({
               </tr>
             </thead>
             <tbody className="divide-y divide-white/[0.06]">
-              {insights.map((row) => (
-                <tr key={row.mediaKind} className="hover:bg-white/[0.03]">
-                  <td className="py-2.5 px-5 text-xs font-semibold text-[#f5f7fa] capitalize">
-                    {row.mediaKind}
-                  </td>
-                  <td className="py-2.5 px-4 text-end text-xs text-[#7f91a4] font-mono-num">
-                    {row.postCount}
-                  </td>
-                  <td className="py-2.5 px-4 text-end text-xs text-[#f5f7fa] font-mono-num">
-                    {row.avgViews.toLocaleString('en-US')}
-                  </td>
-                  <td className="py-2.5 px-4 text-end text-xs text-[#f5a623] font-mono-num">
-                    {row.avgShares}
-                  </td>
-                  <td className="py-2.5 px-5 text-end text-xs text-[#4dcd5e] font-mono-num font-semibold">
-                    {row.avgShareRate}%
+              {insights.length === 0 ? (
+                <tr>
+                  <td colSpan={5} className="py-6 px-5 text-center text-xs text-[#8B9BB0]">
+                    {t.noPostsForFormatTable}
                   </td>
                 </tr>
-              ))}
+              ) : (
+                insights.map((row) => (
+                  <tr key={row.mediaKind} className="hover:bg-white/[0.03]">
+                    <td className="py-2.5 px-5 text-xs font-semibold text-[#f5f7fa]">
+                      {t.mediaKindLabels[row.mediaKind] ?? row.mediaKind}
+                    </td>
+                    <td className="py-2.5 px-4 text-end text-xs text-[#7f91a4] font-mono-num">
+                      {row.postCount}
+                    </td>
+                    <td className="py-2.5 px-4 text-end text-xs text-[#f5f7fa] font-mono-num">
+                      {row.avgViews.toLocaleString('en-US')}
+                    </td>
+                    <td className="py-2.5 px-4 text-end text-xs text-[#f5a623] font-mono-num">
+                      {row.avgShares}
+                    </td>
+                    <td className="py-2.5 px-5 text-end text-xs text-[#4dcd5e] font-mono-num font-semibold">
+                      {row.avgShareRate}%
+                    </td>
+                  </tr>
+                ))
+              )}
             </tbody>
           </table>
         </div>

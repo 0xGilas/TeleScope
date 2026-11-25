@@ -1,4 +1,6 @@
-import type { LanguageCode } from '../types/analytics';
+import type { LanguageCode, MediaKind } from '../types/analytics';
+
+export type MediaKindLabels = Record<MediaKind, string>;
 
 export const translations = {
   fa: {
@@ -38,7 +40,7 @@ export const translations = {
     submit2FaBtn: 'تایید رمز و ورود',
     apiCredsTitle: 'تنظیمات API اختصاصی (my.telegram.org)',
     spikesTitle: 'روزهای اوج تعامل',
-    clickToAttributeHint: '💡 برای مشاهده دقیق اینکه در هر روز چه پست‌هایی ویو و شیر گرفته‌اند، روی ستون‌های نمودار یا روزهای اوج کلیک کنید.',
+    clickToAttributeHint: 'برای مشاهده دقیق اینکه در هر روز چه پست‌هایی ویو و شیر گرفته‌اند، روی ستون‌های نمودار یا روزهای اوج کلیک کنید.',
     mobileSwipeHint: '↔ برای دیدن تمام روزهای هفته، جدول را به طرفین بکشید',
     syncStep1: 'اتصال امن به دیتاسنترهای تلگرام (MTProto DC)',
     syncStep2: 'دریافت گراف‌های تعاملات و آمار کانال',
@@ -210,8 +212,8 @@ export const translations = {
     privateSharesLabel: 'شیر خصوصی',
 
     // Audience & Insights
-    topHoursTitle: 'ساعات اوج بازدید مخاطبان (UTC)',
-    heatmapTitle: 'ماتریس عملکرد انتشار (روز هفته × بازه ۴ ساعته UTC)',
+    topHoursTitle: 'ساعات اوج بازدید مخاطبان',
+    heatmapTitle: 'ماتریس عملکرد انتشار (روز هفته × بازه ۴ ساعته)',
     heatmapSub: 'میانگین نرخ شیر و ویو پست‌های شما بر اساس زمان انتشار — بهترین پنجره انتشار مشخص شده است.',
     goldenWindowLabel: 'بهترین پنجره انتشار',
     viewsBySourceTitle: 'منابع دریافت ویو',
@@ -227,6 +229,122 @@ export const translations = {
     importSnapshotJson: 'بارگذاری Snapshot قبلی',
     exportCsvBtn: 'خروجی کامل جدول پست‌ها (CSV)',
     wipeVaultBtn: 'پاکسازی کامل داده‌های ذخیره‌شده مرورگر',
+
+    // Common Controls & Media Labels
+    openChannelsMenu: 'باز کردن فهرست کانال‌ها',
+    sortPostsLabel: 'مرتب‌سازی پست‌ها',
+    dismissBtn: 'بستن',
+    retryBtn: 'تلاش مجدد',
+    copyBtn: 'کپی',
+    copiedBtn: 'کپی شد',
+    configureBtn: 'تغییر',
+    photoLabel: 'تصویر',
+    videoLabel: 'ویدیو',
+    mediaKindLabels: {
+      text: 'متن',
+      photo: 'تصویر',
+      video: 'ویدیو',
+      audio: 'صوت',
+      document: 'فایل',
+      poll: 'نظرسنجی',
+      album: 'آلبوم',
+    } satisfies MediaKindLabels,
+
+    // Network & Auth Extras
+    cfDeployHint: 'فایل packages/cf-worker-relay/worker.js را در حساب Cloudflare خود مستقر (Deploy) کنید.',
+    mtprotoE2eNote:
+      'رمزنگاری MTProto به‌صورت سرتاسری داخل Web Worker مرورگر انجام می‌شود. پروکسی و رله فقط بسته‌های رمزنگاری‌شده را عبور می‌دهند.',
+    ephemeralVaultSummary: 'نشست پیش‌فرض در RAM · رمزنگاری AES-256-GCM برای ذخیره اختیاری',
+    apiGuideTitle: 'راهنمای دریافت رایگان کلید API (۱ دقیقه):',
+    apiGuideStep1: 'در my.telegram.org با شماره تلفن خود لاگین کنید.',
+    apiGuideStep2: 'گزینه API development tools را بزنید و یک نام دلخواه وارد کنید.',
+    apiGuideStep3: 'کد عددی api_id و کد ۳۲ حرفی api_hash را در کادرهای زیر قرار دهید.',
+    apiCredsReadyLabel: 'کلید تلگرام معتبر است و در این مرورگر ذخیره شد.',
+    apiCredsLocalOnlyLabel: 'اطلاعات فقط در مرورگر شما می‌ماند و به هیچ سروری ارسال نمی‌شود.',
+    qrAltText: 'کد QR ورود به تلگرام',
+    enterApiIdFirstBtn: 'ابتدا API ID را وارد کنید',
+    previewCard: {
+      previewTitle: 'نمونه تفکیک روزانه منشأ شیرها',
+      previewBadge: 'پیش‌نمایش زنده',
+      previewChannel: 'گراف کانال',
+      previewDaysLabels: ['۱۸ اکتبر', '۲۰ اکتبر', '۲۴ اکتبر'],
+      previewCaption: {
+        529: 'گراف تعاملات تک‌پیام و فورواردهای خصوصی',
+        514: 'چک‌لیست گاوصندوق رمزنگاری‌شده AES-256-GCM',
+        498: 'معماری بریج محلی SOCKS5 و رله اختصاصی',
+        480: 'رندر سریع و تعاملی نمودار تایم‌لاین SVG',
+        540: 'بنچمارک WASM MTProto درون Web Worker',
+      },
+      previewShortShares: 'شیر',
+    },
+
+    // Charts & Heatmaps
+    chartTimelineRegion: 'نمودار تعاملی تایم‌لاین',
+    chartHourlyRegion: 'نمودار میله‌ای ساعتی',
+    chartSliderStart: 'شروع بازه',
+    chartSliderEnd: 'پایان بازه',
+    chartViewsSuffix: 'ویو',
+    chartSharesSuffix: 'شیر',
+    chartPostsSuffix: 'پست',
+    dateRangeSummary: 'بازه انتخاب‌شده',
+    noHourlyDataMsg: 'داده‌ای برای ساعات اوج بازدید ثبت نشده است.',
+    peakHourLabel: 'اوج بازدید:',
+    dualAxisViewsSharesHint: 'محور چپ: ویو · محور راست: شیر',
+    heatmapCellTooltip: (
+      dayLabel: string,
+      slot: string,
+      tzLabel: string,
+      count: number,
+      avgShareRate: number,
+      avgViews: number,
+    ): string =>
+      count > 0
+        ? `${dayLabel} ${slot} ${tzLabel}: ${count} پست، میانگین نرخ شیر ${avgShareRate}%، میانگین ویو ${avgViews}`
+        : `${dayLabel} ${slot} ${tzLabel}: بدون پست`,
+
+    // Error Fallbacks
+    errLoadChannel: 'خطا در دریافت اطلاعات کانال از تلگرام',
+    errLoadDetails: 'دریافت آمار تفصیلی پست ناموفق بود',
+    errScanAttribution: 'اسکن آمار روزانه پیام‌ها ناموفق بود',
+    errAuthFailed: 'خطا در احراز هویت تلگرام',
+    errQrLoginFailed: 'ورود با QR Code ناموفق بود',
+    errPinTooShort: 'رمز قفل (PIN) باید حداقل ۶ کاراکتر باشد',
+    errPinTooWeak: 'رمز قفل (PIN) بیش از حد ساده است؛ از ترکیب قوی‌تری استفاده کنید',
+    errSendCodeFailed: 'ارسال کد تایید ناموفق بود',
+    errInvalidCode: 'کد تایید نامعتبر است',
+    errInvalid2Fa: 'رمز دومرحله‌ای (2FA) اشتباه است',
+    errReconnectFailed: 'اتصال مجدد به تلگرام ناموفق بود. تنظیمات شبکه یا پروکسی را بررسی کنید.',
+    errVaultSaveFailed: 'رمزنگاری و ذخیره نشست در گاوصندوق مرورگر ناموفق بود.',
+    apiCredsRequiredError:
+      'برای اتصال به تلگرام، وارد کردن API ID و API Hash معتبر از my.telegram.org الزامی است.',
+    apiIdInvalidError:
+      'کد API ID یا API Hash وارد شده توسط تلگرام رد شد. لطفاً ارقام و حروف کپی شده از my.telegram.org را در کادر تنظیمات API دوباره بررسی کنید.',
+
+    // Dashboard & Inspector Extras
+    noPostsForFormatTable: 'هنوز پستی برای تحلیل عملکرد فرمت‌ها وجود ندارد.',
+    displayTimezoneLabel: 'منطقه زمانی نمایش ساعات:',
+    subscriberLanguagesTitle: 'زبان مخاطبان کانال',
+    noAttributionForDateMsg:
+      'برای این تاریخ هنوز آمار تک‌پیام اسکن نشده است. دکمه اسکن آمار روزانه پست‌ها را بزنید تا سهم هر پیام محاسبه شود.',
+    tabOverviewShort: 'نمای کلی',
+    tabDetectiveShort: 'پست‌ها و ویرال',
+    tabAudienceShort: 'زمان‌بندی',
+    messagesScannedLabel: 'پیام دریافت شد',
+    renderingGraphsLabel: 'در حال رندر گراف‌های MTProto...',
+    reactPerPostUnit: 'واکنش/پست',
+    postsUnit: 'پست',
+    previewHeader: 'پیش‌نمایش پست',
+    loadingPreview: 'در حال دریافت پیش‌نمایش باکیفیت...',
+    audioFallback: 'فایل صوتی بدون عنوان',
+    voiceMsg: 'پیام صوتی',
+    documentFallback: 'فایل پیوست',
+    votesLabel: 'رأی',
+    quizTag: 'آزمون',
+    pollTag: 'نظرسنجی',
+    closedTag: 'بسته‌شده',
+    videoPreviewTag: 'پیش‌نمایش ویدیو',
+    itemsInAlbumLabel: 'آیتم در آلبوم',
+    linkPreviewAlt: 'پیش‌نمایش لینک',
   },
   en: {
     appName: 'TeleScope',
@@ -265,7 +383,7 @@ export const translations = {
     submit2FaBtn: 'Verify Password',
     apiCredsTitle: 'Custom API Credentials (my.telegram.org)',
     spikesTitle: 'Interaction Spikes',
-    clickToAttributeHint: '💡 Click any chart bar or spike pill above to see which posts generated that day’s Views & Shares.',
+    clickToAttributeHint: 'Click any chart bar or spike pill above to see which posts generated that day’s Views & Shares.',
     mobileSwipeHint: '↔ Swipe horizontally to view all weekdays',
     syncStep1: 'Connecting securely to Telegram Web DC',
     syncStep2: 'Fetching channel broadcast stats graphs',
@@ -437,8 +555,8 @@ export const translations = {
     privateSharesLabel: 'Private Shares',
 
     // Audience & Insights
-    topHoursTitle: 'Top Viewing Hours (UTC)',
-    heatmapTitle: 'Posting Performance Matrix (Weekday × 4h UTC Slot)',
+    topHoursTitle: 'Top Viewing Hours',
+    heatmapTitle: 'Posting Performance Matrix (Weekday × 4h Slot)',
     heatmapSub: 'Average Share Rate and Views grouped by publish day & time window.',
     goldenWindowLabel: 'Golden Window',
     viewsBySourceTitle: 'Views by Source',
@@ -454,6 +572,122 @@ export const translations = {
     importSnapshotJson: 'Import Snapshot JSON',
     exportCsvBtn: 'Export All Posts to CSV',
     wipeVaultBtn: 'Wipe All Browser Vault Data',
+
+    // Common Controls & Media Labels
+    openChannelsMenu: 'Open channels menu',
+    sortPostsLabel: 'Sort posts',
+    dismissBtn: 'Dismiss',
+    retryBtn: 'Retry',
+    copyBtn: 'Copy',
+    copiedBtn: 'Copied',
+    configureBtn: 'Configure',
+    photoLabel: 'Photo',
+    videoLabel: 'Video',
+    mediaKindLabels: {
+      text: 'Text',
+      photo: 'Photo',
+      video: 'Video',
+      audio: 'Audio',
+      document: 'Document',
+      poll: 'Poll',
+      album: 'Album',
+    } satisfies MediaKindLabels,
+
+    // Network & Auth Extras
+    cfDeployHint: 'Deploy packages/cf-worker-relay/worker.js to your Cloudflare account.',
+    mtprotoE2eNote:
+      'MTProto encryption happens end-to-end inside your browser Web Worker. Proxies and relays only forward encrypted packets.',
+    ephemeralVaultSummary: 'Ephemeral RAM default · Optional AES-256-GCM local vault',
+    apiGuideTitle: 'Get free Telegram API keys in 1 min:',
+    apiGuideStep1: 'Sign in at my.telegram.org with your phone number.',
+    apiGuideStep2: 'Open API development tools and enter any app title.',
+    apiGuideStep3: 'Copy your numeric api_id and 32-character api_hash into the inputs below.',
+    apiCredsReadyLabel: 'API Credentials ready & saved locally.',
+    apiCredsLocalOnlyLabel: 'Stored strictly in your local browser — zero backend.',
+    qrAltText: 'Telegram Login QR Code',
+    enterApiIdFirstBtn: 'Enter API ID first',
+    previewCard: {
+      previewTitle: 'Daily Share Attribution Preview',
+      previewBadge: 'Live Preview',
+      previewChannel: 'Channel Graph',
+      previewDaysLabels: ['Oct 18', 'Oct 20', 'Oct 24'],
+      previewCaption: {
+        529: 'Per-message interaction graphs & private forwards',
+        514: 'WebCrypto AES-256-GCM Session Vault Checklist',
+        498: 'Local SOCKS5 Bridge + Relay Architecture Pack',
+        480: 'Sub-millisecond SVG timeline scrubbing capture',
+        540: 'Benchmarking WASM MTProto inside a Web Worker',
+      },
+      previewShortShares: 'sh',
+    },
+
+    // Charts & Heatmaps
+    chartTimelineRegion: 'interactive timeline chart',
+    chartHourlyRegion: 'hourly bar chart',
+    chartSliderStart: 'start range',
+    chartSliderEnd: 'end range',
+    chartViewsSuffix: 'views',
+    chartSharesSuffix: 'shares',
+    chartPostsSuffix: 'post(s)',
+    dateRangeSummary: 'Selected date range',
+    noHourlyDataMsg: 'No hourly activity data available yet.',
+    peakHourLabel: 'Peak:',
+    dualAxisViewsSharesHint: 'Left: Views · Right: Shares',
+    heatmapCellTooltip: (
+      dayLabel: string,
+      slot: string,
+      tzLabel: string,
+      count: number,
+      avgShareRate: number,
+      avgViews: number,
+    ): string =>
+      count > 0
+        ? `${dayLabel} ${slot} ${tzLabel}: ${count} post(s), ${avgShareRate}% avg share rate, ${avgViews} avg views`
+        : `${dayLabel} ${slot} ${tzLabel}: no posts`,
+
+    // Error Fallbacks
+    errLoadChannel: 'Failed to load channel data',
+    errLoadDetails: 'Failed to load detailed post statistics',
+    errScanAttribution: 'Failed to scan message attribution stats',
+    errAuthFailed: 'Telegram authentication failed',
+    errQrLoginFailed: 'QR login failed',
+    errPinTooShort: 'Vault PIN must be at least 6 characters',
+    errPinTooWeak: 'Vault PIN is too weak; choose a stronger passcode',
+    errSendCodeFailed: 'Failed to send confirmation code',
+    errInvalidCode: 'Invalid confirmation code',
+    errInvalid2Fa: 'Invalid 2FA password',
+    errReconnectFailed: 'Failed to reconnect to Telegram. Check your network/proxy settings.',
+    errVaultSaveFailed: 'Failed to encrypt session to local browser vault.',
+    apiCredsRequiredError:
+      'Please enter your valid Telegram API ID and API Hash from my.telegram.org.',
+    apiIdInvalidError:
+      'Telegram rejected this API ID / API Hash. Please verify your credentials on my.telegram.org.',
+
+    // Dashboard & Inspector Extras
+    noPostsForFormatTable: 'No posts available to analyze format efficiency yet.',
+    displayTimezoneLabel: 'Display Timezone:',
+    subscriberLanguagesTitle: 'Subscriber Languages',
+    noAttributionForDateMsg:
+      'No per-message daily records scanned for this date yet. Run "Scan Post Timelines (MTProto)" to attribute this date across your post archive.',
+    tabOverviewShort: 'Overview',
+    tabDetectiveShort: 'Posts',
+    tabAudienceShort: 'Timing',
+    messagesScannedLabel: 'messages scanned',
+    renderingGraphsLabel: 'Rendering MTProto graphs...',
+    reactPerPostUnit: 'react/post',
+    postsUnit: 'posts',
+    previewHeader: 'Post Preview',
+    loadingPreview: 'Loading media preview...',
+    audioFallback: 'Untitled Audio Track',
+    voiceMsg: 'Voice Message',
+    documentFallback: 'Attachment File',
+    votesLabel: 'votes',
+    quizTag: 'Quiz',
+    pollTag: 'Poll',
+    closedTag: 'Closed',
+    videoPreviewTag: 'Video Preview',
+    itemsInAlbumLabel: 'items in album',
+    linkPreviewAlt: 'Link preview',
   },
 } as const;
 

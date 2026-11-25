@@ -666,3 +666,69 @@ test('exportPostsToCsv neutralizes spreadsheet formula injection prefixes', () =
   assert.ok(csv.includes("'=HYPERLINK"));
   assert.ok(csv.includes("'+cmd|calc"));
 });
+
+test('attributeDateFromMessageStats indexes >16 dailyBreakdown entries and computeWeekdayHourMatrix matches UTC offset math', () => {
+  const posts = groupAlbumPosts([
+    {
+      id: 10,
+      date: Date.UTC(2026, 9, 1, 22, 0), // Thu Oct 1 22:00 UTC -> Fri Oct 2 01:30 Iran (+210 min)
+      text: 'Album item 1',
+      views: 150,
+      forwards: 4,
+      replies: 2,
+      groupedId: 'grp1',
+      mediaKind: 'photo',
+      reactions: [{ emoji: '🔥', count: 5 }],
+    },
+    {
+      id: 11,
+      date: Date.UTC(2026, 9, 1, 22, 0),
+      text: '',
+      views: 180,
+      forwards: 6,
+      replies: 1,
+      groupedId: 'grp1',
+      mediaKind: 'document',
+      reactions: [{ emoji: '🔥', count: 8 }, { emoji: '👍', count: 3 }],
+    },
+  ]);
+
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].isAlbum, true);
+  assert.equal(posts[0].views, 180);
+  assert.equal(posts[0].forwards, 6);
+  assert.equal(posts[0].albumTotalItemForwards, 10);
+  assert.equal(posts[0].replies, 2);
+  assert.equal(posts[0].reactionsCount, 11);
+
+  const dailyBreakdown = Array.from({ length: 20 }, (_, i) => ({
+    dateKey: `2026-10-${String(i + 1).padStart(2, '0')}`,
+    views: i === 18 ? 42 : 5,
+    shares: i === 18 ? 3 : 0,
+  }));
+
+  const attr = attributeDateFromMessageStats({
+    dateKey: '2026-10-19',
+    posts,
+    postStatsByPost: {
+      'album:grp1': {
+        postKey: 'album:grp1',
+        primaryId: 10,
+        dailyBreakdown,
+        publicForwards: [],
+        loadedAt: Date.now(),
+      },
+    },
+    dailyDeltas: [],
+    publicForwardsByPost: {},
+  });
+  assert.equal(attr.contributions.length, 1);
+  assert.equal(attr.contributions[0].viewsOnDate, 42);
+  assert.equal(attr.contributions[0].sharesOnDate, 3);
+
+  const matrix = computeWeekdayHourMatrix(posts, 210);
+  // Fri (weekday=5), 01:30 -> hourBlock=0
+  const cell = matrix.find((c) => c.weekday === 5 && c.hourBlock === 0);
+  assert.equal(cell?.postCount, 1);
+  assert.equal(cell?.avgViews, 180);
+});

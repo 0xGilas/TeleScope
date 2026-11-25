@@ -18,11 +18,16 @@ const LS_FALLBACK_PREFIX = 'telescope_vault_fb_';
 
 export type VaultErrorCode =
   | 'PIN_REQUIRED'
+  | 'PIN_TOO_SHORT'
+  | 'PIN_TOO_WEAK'
   | 'WRONG_PIN'
   | 'SESSION_NOT_FOUND'
   | 'CRYPTO_UNAVAILABLE'
   | 'CORRUPT_VAULT'
   | 'PIN_LOCKED';
+
+export const MIN_VAULT_PIN_LENGTH = 6;
+export const POST_STATS_NORMALIZED_VERSION = 1;
 
 export class VaultError extends Error {
   readonly code: VaultErrorCode;
@@ -219,12 +224,30 @@ export function parseDecryptedVaultSecret(plaintext: string): VaultSecretBundle 
   return { sessionString: plaintext };
 }
 
+export function validateVaultPin(pin: string): string {
+  const normalizedPin = normalizePinDigits(pin);
+  if (normalizedPin.length === 0) return '';
+  if (normalizedPin.length < MIN_VAULT_PIN_LENGTH) {
+    throw new VaultError(
+      'PIN_TOO_SHORT',
+      `PIN must be at least ${MIN_VAULT_PIN_LENGTH} characters.`,
+    );
+  }
+  if (new Set(Array.from(normalizedPin)).size <= 1) {
+    throw new VaultError(
+      'PIN_TOO_WEAK',
+      'PIN cannot consist of a single repeated character.',
+    );
+  }
+  return normalizedPin;
+}
+
 export async function encryptVaultBundle(
   bundle: VaultSecretBundle,
   pin?: string,
 ): Promise<EncryptedPayload> {
   const subtle = getSubtleCrypto();
-  const normalizedPin = pin ? normalizePinDigits(pin) : '';
+  const normalizedPin = pin ? validateVaultPin(pin) : '';
   const hasPin = normalizedPin.length > 0;
   const secret = hasPin ? normalizedPin : getOrCreateLocalDeviceSecret();
 
@@ -577,24 +600,40 @@ export async function loadApiCredentials(): Promise<ApiCredentials | null> {
       }
       return null;
     }
-    if ('apiId' in raw && typeof raw.apiId === 'number') {
-      return raw;
-    }
+    // Reject and purge legacy unencrypted plaintext apiCreds records
+    await idbDelete(STORE_VAULT, API_CREDS_KEY);
     return null;
   } catch {
     return null;
   }
 }
 
+export interface StoredPostDetailedStats extends PostDetailedStats {
+  normalizedVersion?: number;
+}
+
 export interface StoredChannelHistory {
   latestSnapshot: ChannelSnapshot | null;
   dailyDeltas: DailyDeltaRecord[];
-  postStatsByPost?: Record<string, PostDetailedStats>;
+  postStatsByPost?: Record<string, StoredPostDetailedStats>;
 }
 
 interface StoredChannelMeta {
   latestSnapshot: ChannelSnapshot | null;
   dailyDeltas: DailyDeltaRecord[];
+}
+
+function channelPostKey(channelId: number, postKey: string): string {
+  return `ch:${channelId}:post:${postKey}`;
+}
+
+function channelPostPrefix(channelId: number): string {
+  return `ch:${channelId}:post:`;
+}
+
+function channelPostUpperBound(channelId: number): string {
+  // ';' (charCode 59) immediately follows ':' (charCode 58)
+  return `ch:${channelId}:post;`;
 }
 
 export async function saveChannelMetaHistory(
@@ -608,11 +647,124 @@ export async function saveChannelMetaHistory(
   });
 }
 
+export async function saveChannelPostStat(
+  channelId: number,
+  postKey: string,
+  stat: StoredPostDetailedStats,
+): Promise<void> {
+  const record: StoredPostDetailedStats =
+    stat.normalizedVersion === undefined
+      ? { ...stat, normalizedVersion: POST_STATS_NORMALIZED_VERSION }
+      : stat;
+  await idbSet(STORE_SNAPSHOTS, channelPostKey(channelId, postKey), record);
+}
+
 export async function saveChannelPostStats(
   channelId: number,
-  postStatsByPost: Record<string, PostDetailedStats>,
+  postStatsByPost: Record<string, StoredPostDetailedStats>,
 ): Promise<void> {
-  await idbSet(STORE_SNAPSHOTS, `ch:${channelId}:stats`, postStatsByPost);
+  const db = await openVaultDb();
+  const entries = Object.entries(postStatsByPost);
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(STORE_SNAPSHOTS, 'readwrite');
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error ?? new Error('IndexedDB write failed'));
+    tx.onabort = () => reject(tx.error ?? new Error('IndexedDB transaction aborted'));
+    const store = tx.objectStore(STORE_SNAPSHOTS);
+    for (const [postKey, stat] of entries) {
+      const record: StoredPostDetailedStats =
+        stat.normalizedVersion === undefined
+          ? { ...stat, normalizedVersion: POST_STATS_NORMALIZED_VERSION }
+          : stat;
+      store.put(record, channelPostKey(channelId, postKey));
+    }
+    store.delete(`ch:${channelId}:stats`);
+  });
+}
+
+export async function loadChannelPostStats(
+  channelId: number,
+): Promise<Record<string, StoredPostDetailedStats>> {
+  const result: Record<string, StoredPostDetailedStats> = {};
+  try {
+    const db = await openVaultDb();
+    const prefix = channelPostPrefix(channelId);
+    const range =
+      typeof IDBKeyRange !== 'undefined'
+        ? IDBKeyRange.bound(prefix, channelPostUpperBound(channelId), false, true)
+        : undefined;
+    const legacyKey = `ch:${channelId}:stats`;
+
+    const { keys, values, legacyStats } = await new Promise<{
+      keys: IDBValidKey[];
+      values: StoredPostDetailedStats[];
+      legacyStats: Record<string, StoredPostDetailedStats> | null;
+    }>((resolve, reject) => {
+      const tx = db.transaction(STORE_SNAPSHOTS, 'readonly');
+      const store = tx.objectStore(STORE_SNAPSHOTS);
+      const keysReq = range ? store.getAllKeys(range) : store.getAllKeys();
+      const valsReq = range ? store.getAll(range) : store.getAll();
+      const legacyReq = store.get(legacyKey);
+
+      let keysRes: IDBValidKey[] = [];
+      let valsRes: StoredPostDetailedStats[] = [];
+      let legacyRes: Record<string, StoredPostDetailedStats> | null = null;
+
+      keysReq.onsuccess = () => {
+        keysRes = keysReq.result ?? [];
+      };
+      valsReq.onsuccess = () => {
+        valsRes = (valsReq.result as StoredPostDetailedStats[]) ?? [];
+      };
+      legacyReq.onsuccess = () => {
+        legacyRes = (legacyReq.result as Record<string, StoredPostDetailedStats>) ?? null;
+      };
+      tx.oncomplete = () => resolve({ keys: keysRes, values: valsRes, legacyStats: legacyRes });
+      tx.onerror = () => reject(tx.error ?? new Error('Failed to load channel post stats'));
+      tx.onabort = () => reject(tx.error ?? new Error('Load channel post stats aborted'));
+    });
+
+    if (legacyStats && typeof legacyStats === 'object') {
+      for (const [k, v] of Object.entries(legacyStats)) {
+        if (v) result[k] = v;
+      }
+    }
+
+    const existingPerPostKeys = new Set<string>();
+    for (let i = 0; i < keys.length; i += 1) {
+      const key = keys[i];
+      const val = values[i];
+      if (typeof key === 'string' && key.startsWith(prefix) && val) {
+        existingPerPostKeys.add(key);
+        result[key.slice(prefix.length)] = val;
+      }
+    }
+
+    if (legacyStats && typeof legacyStats === 'object') {
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const tx = db.transaction(STORE_SNAPSHOTS, 'readwrite');
+          const store = tx.objectStore(STORE_SNAPSHOTS);
+          for (const [k, v] of Object.entries(legacyStats)) {
+            if (!v) continue;
+            const perPostKey = channelPostKey(channelId, k);
+            if (!existingPerPostKeys.has(perPostKey)) {
+              store.put(v, perPostKey);
+            }
+          }
+          store.delete(legacyKey);
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error);
+          tx.onabort = () => reject(tx.error);
+        });
+      } catch {
+        // Best-effort background migration; merged entries are already returned
+      }
+    }
+  } catch {
+    // ignore if db unavailable
+  }
+  return result;
 }
 
 export async function saveChannelSnapshotHistory(
@@ -629,15 +781,16 @@ export async function loadChannelSnapshotHistory(
   channelId: number,
 ): Promise<StoredChannelHistory | null> {
   try {
-    const [meta, stats] = await Promise.all([
+    const [meta, postStatsByPost] = await Promise.all([
       idbGet<StoredChannelMeta>(STORE_SNAPSHOTS, `ch:${channelId}:meta`),
-      idbGet<Record<string, PostDetailedStats>>(STORE_SNAPSHOTS, `ch:${channelId}:stats`),
+      loadChannelPostStats(channelId),
     ]);
-    if (meta || stats) {
+    const hasStats = Object.keys(postStatsByPost).length > 0;
+    if (meta || hasStats) {
       return {
         latestSnapshot: meta?.latestSnapshot ?? null,
         dailyDeltas: meta?.dailyDeltas ?? [],
-        postStatsByPost: stats ?? {},
+        postStatsByPost,
       };
     }
     // Legacy single-record fallback
@@ -647,11 +800,57 @@ export async function loadChannelSnapshotHistory(
   }
 }
 
+export async function clearChannelCache(channelId: number): Promise<void> {
+  try {
+    const db = await openVaultDb();
+    const prefix = channelPostPrefix(channelId);
+    const range =
+      typeof IDBKeyRange !== 'undefined'
+        ? IDBKeyRange.bound(prefix, channelPostUpperBound(channelId), false, true)
+        : undefined;
+
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(STORE_SNAPSHOTS, 'readwrite');
+      const store = tx.objectStore(STORE_SNAPSHOTS);
+      store.delete(`ch:${channelId}:meta`);
+      store.delete(`ch:${channelId}:stats`);
+      store.delete(`ch:${channelId}`);
+      if (range) {
+        store.delete(range);
+      } else {
+        const keysReq = store.getAllKeys();
+        keysReq.onsuccess = () => {
+          for (const k of keysReq.result ?? []) {
+            if (typeof k === 'string' && k.startsWith(prefix)) {
+              store.delete(k);
+            }
+          }
+        };
+      }
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error ?? new Error('Failed to clear channel cache'));
+      tx.onabort = () => reject(tx.error ?? new Error('Clear channel cache aborted'));
+    });
+  } catch {
+    // ignore if db unavailable
+  }
+}
+
 export async function wipeAllVaultData(): Promise<void> {
   resetPinLockout();
   try {
     if (typeof window !== 'undefined' && window.localStorage) {
       window.localStorage.removeItem(DEVICE_SECRET_STORAGE_KEY);
+      const keysToRemove: string[] = [];
+      for (let i = 0; i < window.localStorage.length; i += 1) {
+        const k = window.localStorage.key(i);
+        if (k && (k.startsWith(LS_FALLBACK_PREFIX) || k.startsWith('ch:'))) {
+          keysToRemove.push(k);
+        }
+      }
+      for (const k of keysToRemove) {
+        window.localStorage.removeItem(k);
+      }
     }
   } catch {
     // ignore

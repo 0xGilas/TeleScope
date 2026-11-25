@@ -969,19 +969,27 @@ function createChannel2Bundle(): ChannelAnalyticsBundle {
   };
 }
 
+let cachedSampleDataset: {
+  channels: ChannelSummary[];
+  bundles: Record<number, ChannelAnalyticsBundle>;
+} | null = null;
+
 export function getSampleDataset(): {
   channels: ChannelSummary[];
   bundles: Record<number, ChannelAnalyticsBundle>;
 } {
-  const b1 = createChannel1Bundle();
-  const b2 = createChannel2Bundle();
-  return {
-    channels: SAMPLE_CHANNELS,
-    bundles: {
-      [b1.channel.id]: b1,
-      [b2.channel.id]: b2,
-    },
-  };
+  if (!cachedSampleDataset) {
+    const b1 = createChannel1Bundle();
+    const b2 = createChannel2Bundle();
+    cachedSampleDataset = {
+      channels: SAMPLE_CHANNELS,
+      bundles: {
+        [b1.channel.id]: b1,
+        [b2.channel.id]: b2,
+      },
+    };
+  }
+  return cachedSampleDataset;
 }
 
 export { computeFormatInsights };

@@ -9,6 +9,7 @@ import {
   Mic,
   Music,
 } from 'lucide-react';
+import { getTranslations } from '../../i18n/translations';
 import type {
   LanguageCode,
   PostMediaPreview,
@@ -40,27 +41,17 @@ export const PostPreviewCard: React.FC<PostPreviewCardProps> = React.memo(({
   const previewSrc = primaryPreviewItem?.previewUrl ?? meta?.thumbUrl;
   const isBlurryThumbOnly = Boolean(!primaryPreviewItem?.previewUrl && meta?.thumbUrl && loadingMediaPreview);
 
-  const labels = {
-    previewHeader: lang === 'fa' ? 'پیش‌نمایش پست' : 'Post Preview',
-    loadingPreview: lang === 'fa' ? 'در حال دریافت پیش‌نمایش باکیفیت...' : 'Loading media preview...',
-    audioFallback: lang === 'fa' ? 'فایل صوتی بدون عنوان' : 'Untitled Audio Track',
-    voiceMsg: lang === 'fa' ? 'پیام صوتی' : 'Voice Message',
-    documentFallback: lang === 'fa' ? 'فایل پیوست' : 'Attachment File',
-    votesLabel: lang === 'fa' ? 'رأی' : 'votes',
-    quizTag: lang === 'fa' ? 'آزمون' : 'Quiz',
-    pollTag: lang === 'fa' ? 'نظرسنجی' : 'Poll',
-    closedTag: lang === 'fa' ? 'بسته‌شده' : 'Closed',
-  };
+  const t = getTranslations(lang);
 
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between gap-2">
         <span className="text-[11px] font-semibold uppercase tracking-wider text-[#5EC2F6]">
-          {labels.previewHeader}
+          {t.previewHeader}
         </span>
         {loadingMediaPreview && (
           <span className="text-[11px] text-[#8B9BB0] animate-pulse">
-            {labels.loadingPreview}
+            {t.loadingPreview}
           </span>
         )}
       </div>
@@ -77,18 +68,18 @@ export const PostPreviewCard: React.FC<PostPreviewCardProps> = React.memo(({
                 isBlurryThumbOnly ? 'blur-sm scale-[1.02]' : ''
               }`}
             />
-            ) : (
+          ) : (
             <div className="h-36 flex flex-col items-center justify-center gap-2 text-[#8596AA]">
-              <ImageIcon className="w-7 h-7" />
+              <ImageIcon className="w-7 h-7" aria-hidden="true" />
               <span className="text-xs">
-                {loadingMediaPreview ? labels.loadingPreview : 'Photo'}
+                {loadingMediaPreview ? t.loadingPreview : t.photoLabel}
               </span>
             </div>
           )}
           {meta?.width && meta?.height && (
             <span
               dir="ltr"
-              className="absolute bottom-2 right-2 rounded-md bg-black/70 px-2 py-0.5 text-[10px] font-mono-num text-[#F0F4F8] border border-white/10"
+              className="absolute bottom-2 end-2 rounded-md bg-black/70 px-2 py-0.5 text-[10px] font-mono-num text-[#F0F4F8] border border-white/10"
             >
               {meta.width}×{meta.height}
             </span>
@@ -103,25 +94,25 @@ export const PostPreviewCard: React.FC<PostPreviewCardProps> = React.memo(({
             {previewSrc ? (
               <img
                 src={previewSrc}
-                alt={meta?.title ?? labels.audioFallback}
+                alt={meta?.title ?? t.audioFallback}
                 decoding="async"
                 className={`w-full h-full object-cover ${isBlurryThumbOnly ? 'blur-xs' : ''}`}
               />
             ) : meta?.isVoice ? (
-              <Mic className="w-6 h-6 text-[#2AABEE]" />
+              <Mic className="w-6 h-6 text-[#2AABEE]" aria-hidden="true" />
             ) : (
-              <Music className="w-6 h-6 text-[#2AABEE]" />
+              <Music className="w-6 h-6 text-[#2AABEE]" aria-hidden="true" />
             )}
           </div>
 
           <div className="min-w-0 flex-1 space-y-1">
-            <div dir="auto" className="text-[13px] font-semibold text-[#F0F4F8] truncate">
+            <div dir="auto" className="text-[13px] font-semibold text-[#F0F4F8] break-words">
               {meta?.isVoice
-                ? labels.voiceMsg
-                : meta?.title || meta?.fileName || labels.audioFallback}
+                ? t.voiceMsg
+                : meta?.title || meta?.fileName || t.audioFallback}
             </div>
             {meta?.performer && (
-              <div dir="auto" className="text-xs text-[#8B9BB0] truncate">{meta.performer}</div>
+              <div dir="auto" className="text-xs text-[#8B9BB0] break-words">{meta.performer}</div>
             )}
             <div
               dir="ltr"
@@ -153,26 +144,28 @@ export const PostPreviewCard: React.FC<PostPreviewCardProps> = React.memo(({
               src={previewSrc}
               alt={getPostDisplayTitle(post, lang)}
               decoding="async"
-              className={`w-full max-h-64 object-cover bg-[#090C10] ${
+              className={`w-full max-h-64 object-contain bg-[#090C10] ${
                 isBlurryThumbOnly ? 'blur-sm scale-[1.02]' : ''
               }`}
             />
           ) : (
             <div className="h-36 flex flex-col items-center justify-center gap-2 text-[#8596AA]">
-              <Film className="w-7 h-7" />
-              <span className="text-xs">{meta?.fileName ?? 'Video'}</span>
+              <Film className="w-7 h-7" aria-hidden="true" />
+              <span className="text-xs break-words px-3 text-center">
+                {meta?.fileName ?? t.videoLabel}
+              </span>
             </div>
           )}
 
           <div className="absolute inset-0 bg-gradient-to-t from-black/75 via-transparent to-transparent pointer-events-none" />
-          <div className="absolute top-2.5 left-2.5 inline-flex items-center gap-1 rounded bg-black/75 px-2 py-0.5 text-[10px] font-medium text-[#F0F4F8] border border-white/15 pointer-events-none">
-            <Film className="w-3 h-3 text-[#5EC2F6]" />
-            <span>{meta?.isAnimation ? 'GIF' : lang === 'fa' ? 'پیش‌نمایش ویدیو' : 'Video Preview'}</span>
+          <div className="absolute top-2.5 start-2.5 inline-flex items-center gap-1 rounded bg-black/75 px-2 py-0.5 text-[10px] font-medium text-[#F0F4F8] border border-white/15 pointer-events-none">
+            <Film className="w-3 h-3 text-[#5EC2F6]" aria-hidden="true" />
+            <span>{meta?.isAnimation ? 'GIF' : t.videoPreviewTag}</span>
           </div>
 
           <div
             dir="ltr"
-            className="absolute bottom-2.5 left-2.5 right-2.5 flex items-center justify-between text-[11px] font-mono-num text-[#F0F4F8]"
+            className="absolute bottom-2.5 start-2.5 end-2.5 flex items-center justify-between text-[11px] font-mono-num text-[#F0F4F8]"
           >
             <div className="flex items-center gap-1.5">
               {meta?.isAnimation ? (
@@ -203,24 +196,24 @@ export const PostPreviewCard: React.FC<PostPreviewCardProps> = React.memo(({
           {previewSrc ? (
             <img
               src={previewSrc}
-              alt={meta?.fileName ?? labels.documentFallback}
+              alt={meta?.fileName ?? t.documentFallback}
               className="w-14 h-14 rounded-lg object-cover border border-white/10 shrink-0"
             />
           ) : (
             <div className="w-12 h-12 rounded-lg bg-[#2AABEE]/12 border border-[#2AABEE]/25 flex items-center justify-center text-[#5EC2F6] shrink-0">
-              <FileText className="w-5 h-5" />
+              <FileText className="w-5 h-5" aria-hidden="true" />
             </div>
           )}
           <div className="min-w-0 flex-1 space-y-1">
-            <div className="text-[13px] font-semibold text-[#F0F4F8] truncate">
-              {meta?.fileName || labels.documentFallback}
+            <div className="text-[13px] font-semibold text-[#F0F4F8] break-words">
+              {meta?.fileName || t.documentFallback}
             </div>
-            <div dir="ltr" className="flex items-center gap-2 text-[11px] font-mono-num text-[#8B9BB0]">
+            <div dir="ltr" className="flex flex-wrap items-center gap-2 text-[11px] font-mono-num text-[#8B9BB0]">
               {meta?.fileSizeBytes ? <span>{formatFileSize(meta.fileSizeBytes)}</span> : null}
               {meta?.mimeType ? (
                 <>
                   {meta?.fileSizeBytes && <span>·</span>}
-                  <span className="truncate">{meta.mimeType}</span>
+                  <span className="break-all">{meta.mimeType}</span>
                 </>
               ) : null}
             </div>
@@ -233,14 +226,14 @@ export const PostPreviewCard: React.FC<PostPreviewCardProps> = React.memo(({
         <div className="rounded-xl border border-white/10 bg-[#0B0F14] p-4 space-y-3">
           <div className="flex items-start justify-between gap-2">
             <div className="flex items-start gap-2 min-w-0">
-              <BarChart3 className="w-4 h-4 text-[#5EC2F6] shrink-0 mt-0.5" />
-              <div className="text-[13px] font-semibold text-[#F0F4F8] leading-snug">
+              <BarChart3 className="w-4 h-4 text-[#5EC2F6] shrink-0 mt-0.5" aria-hidden="true" />
+              <div className="text-[13px] font-semibold text-[#F0F4F8] leading-snug break-words">
                 {meta.pollQuestion}
               </div>
             </div>
             <span className="rounded-md bg-white/[0.06] px-2 py-0.5 text-[10px] font-medium text-[#8B9BB0] shrink-0">
-              {meta.pollIsQuiz ? labels.quizTag : labels.pollTag}
-              {meta.pollIsClosed ? ` · ${labels.closedTag}` : ''}
+              {meta.pollIsQuiz ? t.quizTag : t.pollTag}
+              {meta.pollIsClosed ? ` · ${t.closedTag}` : ''}
             </span>
           </div>
 
@@ -254,8 +247,8 @@ export const PostPreviewCard: React.FC<PostPreviewCardProps> = React.memo(({
                 const pct = Math.round((opt.voters / total) * 100);
                 return (
                   <div key={`${i}-${opt.text}`} className="space-y-1">
-                    <div className="flex items-center justify-between gap-2 text-xs">
-                      <span className="text-[#F0F4F8] truncate">{opt.text}</span>
+                    <div className="flex items-start justify-between gap-2 text-xs">
+                      <span className="text-[#F0F4F8] min-w-0 break-words">{opt.text}</span>
                       <span dir="ltr" className="font-mono-num text-[#5EC2F6] shrink-0">
                         {pct}% ({opt.voters})
                       </span>
@@ -274,7 +267,7 @@ export const PostPreviewCard: React.FC<PostPreviewCardProps> = React.memo(({
 
           {typeof meta.pollVoters === 'number' && (
             <div className="text-[11px] text-[#8B9BB0] font-mono-num">
-              {meta.pollVoters.toLocaleString('en-US')} {labels.votesLabel}
+              {meta.pollVoters.toLocaleString('en-US')} {t.votesLabel}
             </div>
           )}
         </div>
@@ -284,9 +277,9 @@ export const PostPreviewCard: React.FC<PostPreviewCardProps> = React.memo(({
       {post.isAlbum && (
         <div className="rounded-xl border border-white/10 bg-[#0B0F14] p-3 space-y-2.5">
           <div className="flex items-center gap-1.5 text-[11px] text-[#8B9BB0]">
-            <Layers className="w-3.5 h-3.5 text-[#5EC2F6]" />
+            <Layers className="w-3.5 h-3.5 text-[#5EC2F6]" aria-hidden="true" />
             <span>
-              {post.albumChildren.length} {lang === 'fa' ? 'آیتم در آلبوم' : 'items in album'}
+              {post.albumChildren.length} {t.itemsInAlbumLabel}
             </span>
           </div>
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
@@ -302,7 +295,7 @@ export const PostPreviewCard: React.FC<PostPreviewCardProps> = React.memo(({
                   {childThumb ? (
                     <img
                       src={childThumb}
-                      alt={childMeta?.title || childMeta?.fileName || `Item ${idx + 1}`}
+                      alt={childMeta?.title || childMeta?.fileName || `${t.itemLabel} ${idx + 1}`}
                       loading="lazy"
                       decoding="async"
                       className="absolute inset-0 w-full h-full object-cover"
@@ -310,24 +303,24 @@ export const PostPreviewCard: React.FC<PostPreviewCardProps> = React.memo(({
                   ) : (
                     <>
                       {child.mediaKind === 'audio' ? (
-                        <Music className="w-5 h-5 text-[#5EC2F6] mb-1" />
+                        <Music className="w-5 h-5 text-[#5EC2F6] mb-1" aria-hidden="true" />
                       ) : child.mediaKind === 'video' ? (
-                        <Film className="w-5 h-5 text-[#5EC2F6] mb-1" />
+                        <Film className="w-5 h-5 text-[#5EC2F6] mb-1" aria-hidden="true" />
                       ) : child.mediaKind === 'document' ? (
-                        <FileText className="w-5 h-5 text-[#5EC2F6] mb-1" />
+                        <FileText className="w-5 h-5 text-[#5EC2F6] mb-1" aria-hidden="true" />
                       ) : (
-                        <ImageIcon className="w-5 h-5 text-[#5EC2F6] mb-1" />
+                        <ImageIcon className="w-5 h-5 text-[#5EC2F6] mb-1" aria-hidden="true" />
                       )}
                       <span className="text-[10px] text-[#8B9BB0] line-clamp-2 break-all">
-                        {childMeta?.title || childMeta?.fileName || child.mediaKind}
+                        {childMeta?.title || childMeta?.fileName || t.mediaKindLabels[child.mediaKind]}
                       </span>
                     </>
                   )}
                   <span
                     dir="ltr"
-                    className="absolute top-1.5 left-1.5 rounded bg-black/75 px-1.5 py-0.5 text-[9px] font-mono-num text-[#F0F4F8] border border-white/10"
+                    className="absolute top-1.5 start-1.5 rounded bg-black/75 px-1.5 py-0.5 text-[9px] font-mono-num text-[#F0F4F8] border border-white/10"
                   >
-                    #{idx + 1} · {child.mediaKind}
+                    #{idx + 1} · {t.mediaKindLabels[child.mediaKind]}
                   </span>
                 </div>
               );
@@ -342,24 +335,28 @@ export const PostPreviewCard: React.FC<PostPreviewCardProps> = React.memo(({
           {previewSrc ? (
             <img
               src={previewSrc}
-              alt={meta.title ?? meta.webPageSite ?? 'Link preview'}
+              alt={meta.title ?? meta.webPageSite ?? t.linkPreviewAlt}
               className="w-12 h-12 rounded-lg object-cover border border-white/10 shrink-0"
             />
           ) : (
             <div className="w-10 h-10 rounded-lg bg-[#2AABEE]/12 border border-[#2AABEE]/25 flex items-center justify-center text-[#5EC2F6] shrink-0">
-              <Link2 className="w-4 h-4" />
+              <Link2 className="w-4 h-4" aria-hidden="true" />
             </div>
           )}
           <div className="min-w-0 flex-1">
             {meta.webPageSite && (
-              <div className="text-[10px] font-semibold uppercase tracking-wider text-[#5EC2F6]">
+              <div className="text-[10px] font-semibold uppercase tracking-wider text-[#5EC2F6] break-words">
                 {meta.webPageSite}
               </div>
             )}
-            <div className="text-xs font-medium text-[#F0F4F8] truncate">
+            <div className="text-xs font-medium text-[#F0F4F8] break-words">
               {meta.title || meta.webPageUrl}
             </div>
-            <div dir="ltr" className="text-[11px] font-mono-num text-[#8B9BB0] truncate">
+            <div
+              dir="ltr"
+              title={meta.webPageUrl}
+              className="text-[11px] font-mono-num text-[#8B9BB0] truncate"
+            >
               {meta.webPageUrl}
             </div>
           </div>

@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, useTransition } from 'react';
-import { Camera, Menu, RefreshCw } from 'lucide-react';
+import { Camera, Loader2, Menu, RefreshCw, X } from 'lucide-react';
 import type {
   ApiCredentials,
   AuthStep,
@@ -12,7 +12,7 @@ import type {
   ParsedStatsGraph,
   PostMediaPreview,
   PostRecord,
-  PostDetailedStats,
+  PublicForwardRecord,
   SessionPersistenceMode,
   TimezoneMode,
 } from './types/analytics';
@@ -32,21 +32,25 @@ import {
   loadChannelSnapshotHistory,
   loadEncryptedSessionBundle,
   loadNetworkConfig,
-  sanitizeNetworkForUnencryptedStorage,
+  POST_STATS_NORMALIZED_VERSION,
   saveApiCredentials,
   saveChannelMetaHistory,
-  saveChannelPostStats,
+  saveChannelPostStat,
   saveChannelSnapshotHistory,
   saveEncryptedSessionBundle,
   saveNetworkConfig,
+  type StoredPostDetailedStats,
   VaultError,
   wipeAllVaultData,
 } from './utils/cryptoVault';
 import { telegramBridge } from './services/telegramBridge';
 import { AuthScreen } from './components/auth/AuthScreen';
 import { Sidebar } from './components/layout/Sidebar';
-import { OverviewTab } from './components/dashboard/OverviewTab';
 import { ChannelAvatar } from './components/common/ChannelAvatar';
+
+const OverviewTab = lazy(() =>
+  import('./components/dashboard/OverviewTab').then((m) => ({ default: m.OverviewTab })),
+);
 
 const NetworkModal = lazy(() =>
   import('./components/auth/NetworkModal').then((m) => ({ default: m.NetworkModal })),
@@ -87,6 +91,28 @@ const DEFAULT_API_CREDS: ApiCredentials =
     : { apiId: 0, apiHash: '' };
 
 type DashboardTab = 'overview' | 'detective' | 'audience';
+
+const MAX_MEDIA_PREVIEW_CACHE = 80;
+const EMPTY_FORWARDS: PublicForwardRecord[] = [];
+
+function putMediaPreviewLru(
+  prev: Record<string, PostMediaPreview>,
+  key: string,
+  value: PostMediaPreview,
+): Record<string, PostMediaPreview> {
+  const next: Record<string, PostMediaPreview> = {};
+  for (const [k, v] of Object.entries(prev)) {
+    if (k !== key) {
+      next[k] = v;
+    }
+  }
+  next[key] = value;
+  const keys = Object.keys(next);
+  for (let i = 0; i < keys.length - MAX_MEDIA_PREVIEW_CACHE; i += 1) {
+    delete next[keys[i]];
+  }
+  return next;
+}
 
 function mergeDailyDeltas(
   existing: DailyDeltaRecord[],
@@ -195,6 +221,11 @@ export function App() {
   });
   const apiCredsRef = useRef<ApiCredentials>(apiCreds);
   const networkRef = useRef<NetworkConfig>(network);
+  const scanDepthRef = useRef(scanDepth);
+  scanDepthRef.current = scanDepth;
+
+  const channelSyncReqIdRef = useRef(0);
+  const apiCredsSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     persistenceRef.current = { mode: persistenceMode, pin: vaultPin };
@@ -207,6 +238,15 @@ export function App() {
   useEffect(() => {
     networkRef.current = network;
   }, [network]);
+
+  useEffect(() => {
+    return () => {
+      if (apiCredsSaveTimerRef.current) {
+        clearTimeout(apiCredsSaveTimerRef.current);
+        apiCredsSaveTimerRef.current = null;
+      }
+    };
+  }, []);
 
   // Auth flow state
   const [authStep, setAuthStep] = useState<AuthStep>('idle');
@@ -222,6 +262,8 @@ export function App() {
   const [isSampleMode, setIsSampleMode] = useState<boolean>(false);
   const [channels, setChannels] = useState<ChannelSummary[]>([]);
   const [bundlesByChannel, setBundlesByChannel] = useState<Record<number, ChannelAnalyticsBundle>>({});
+  const bundlesByChannelRef = useRef(bundlesByChannel);
+  bundlesByChannelRef.current = bundlesByChannel;
   const [activeChannelId, setActiveChannelId] = useState<number | null>(null);
   const [activeTab, setActiveTab] = useState<DashboardTab>('overview');
   const [selectedDateKey, setSelectedDateKey] = useState<string | null>(null);
@@ -335,33 +377,56 @@ export function App() {
       );
       setSavedSessionMeta({ exists: true, hasPin: meta.hasPin });
     } catch (err) {
-      setLiveError(
-        err instanceof Error
-          ? `Session vault save warning: ${err.message}`
-          : 'Failed to encrypt session to local browser vault.',
-      );
+      if (err instanceof VaultError) {
+        if (err.code === 'PIN_TOO_SHORT') {
+          setLiveError(t.errPinTooShort);
+          return;
+        }
+        if (err.code === 'PIN_TOO_WEAK') {
+          setLiveError(t.errPinTooWeak);
+          return;
+        }
+      }
+      setLiveError(err instanceof Error ? err.message : t.errVaultSaveFailed);
+    } finally {
+      persistenceRef.current = { ...persistenceRef.current, pin: '' };
+      setVaultPin('');
     }
-  }, []);
+  }, [t.errPinTooShort, t.errPinTooWeak, t.errVaultSaveFailed]);
 
   const loadLiveChannelBundle = useCallback(async (channelId: number, maxMessages = 400) => {
+    const reqId = ++channelSyncReqIdRef.current;
     setSyncingChannel(true);
     setScanProgressCount(0);
     setLiveError(null);
     try {
+      await telegramBridge.abortChannelSync().catch(() => {});
+      if (channelSyncReqIdRef.current !== reqId) return;
+
       const res = await telegramBridge.fetchChannelAnalytics(channelId, maxMessages);
+      if (channelSyncReqIdRef.current !== reqId) return;
+
       const recentSet = new Set(res.overview.recentPostIds);
       const grouped = groupAlbumPosts(res.rawMessages, recentSet);
+      const groupedByKey = new Map(grouped.map((p) => [p.key, p]));
 
       const history = await loadChannelSnapshotHistory(channelId);
+      if (channelSyncReqIdRef.current !== reqId) return;
+
       const prevSnapshot = history?.latestSnapshot ?? null;
       const rawCachedPostStats = history?.postStatsByPost ?? {};
-      const cachedPostStats: Record<string, PostDetailedStats> = {};
+      const cachedPostStats: Record<string, StoredPostDetailedStats> = {};
       for (const [key, detailed] of Object.entries(rawCachedPostStats)) {
-        const post = grouped.find((p) => p.key === key);
-        if (post && detailed.viewsGraph) {
+        const post = groupedByKey.get(key);
+        const alreadyNormalized =
+          detailed.normalizedVersion === POST_STATS_NORMALIZED_VERSION &&
+          Array.isArray(detailed.dailyBreakdown) &&
+          detailed.dailyBreakdown.length > 0;
+        if (post && detailed.viewsGraph && !alreadyNormalized) {
           cachedPostStats[key] = {
             ...detailed,
             dailyBreakdown: extractDailyActivityFromGraph(detailed.viewsGraph, post.date),
+            normalizedVersion: POST_STATS_NORMALIZED_VERSION,
           };
         } else {
           cachedPostStats[key] = detailed;
@@ -406,6 +471,7 @@ export function App() {
         dailyDeltas: newDailyDeltas,
         postStatsByPost: cachedPostStats,
       });
+      if (channelSyncReqIdRef.current !== reqId) return;
 
       const publicForwardsByPost: ChannelAnalyticsBundle['publicForwardsByPost'] = {};
       for (const [k, v] of Object.entries(cachedPostStats)) {
@@ -432,11 +498,17 @@ export function App() {
       setBundlesByChannel((prev) => ({ ...prev, [channelId]: bundle }));
       setSelectedDateKey(pickDefaultDateKey(res.overview.interactionsGraph));
     } catch (err) {
-      setLiveError(err instanceof Error ? err.message : 'Failed to sync channel');
+      const message = err instanceof Error ? err.message : '';
+      if (message.includes('CHANNEL_SYNC_ABORTED') || channelSyncReqIdRef.current !== reqId) {
+        return;
+      }
+      setLiveError(err instanceof Error ? err.message : t.errLoadChannel);
     } finally {
-      setSyncingChannel(false);
+      if (channelSyncReqIdRef.current === reqId) {
+        setSyncingChannel(false);
+      }
     }
-  }, []);
+  }, [t.errLoadChannel]);
 
   const handleAuthorized = useCallback(
     async (options?: { skipPersist?: boolean }) => {
@@ -451,13 +523,13 @@ export function App() {
         setChannels(chList);
         if (chList.length > 0) {
           setActiveChannelId(chList[0].id);
-          await loadLiveChannelBundle(chList[0].id, scanDepth);
+          await loadLiveChannelBundle(chList[0].id, scanDepthRef.current);
         }
       } catch (err) {
-        setLiveError(err instanceof Error ? err.message : 'Failed to load channels');
+        setLiveError(err instanceof Error ? err.message : t.errLoadChannel);
       }
     },
-    [persistSessionIfConsented, loadLiveChannelBundle],
+    [persistSessionIfConsented, loadLiveChannelBundle, t.errLoadChannel],
   );
 
   // Wire worker event listeners
@@ -548,22 +620,21 @@ export function App() {
     });
   }, [handleAuthorized]);
 
-  const validateApiCreds = (credsToCheck: ApiCredentials = apiCredsRef.current): ApiCredentials | null => {
-    const cleanId = Number(credsToCheck?.apiId) || 0;
-    const cleanHash = String(credsToCheck?.apiHash || '').trim();
-    const effective: ApiCredentials = { apiId: cleanId, apiHash: cleanHash };
-    if (!isValidApiCreds(effective)) {
-      setForceShowApiBox(true);
-      setAuthError(
-        lang === 'fa'
-          ? 'برای اتصال به تلگرام، وارد کردن API ID و API Hash معتبر از my.telegram.org الزامی است.'
-          : 'Please enter your valid Telegram API ID and API Hash from my.telegram.org.',
-      );
-      return null;
-    }
-    setForceShowApiBox(false);
-    return effective;
-  };
+  const validateApiCreds = useCallback(
+    (credsToCheck: ApiCredentials = apiCredsRef.current): ApiCredentials | null => {
+      const cleanId = Number(credsToCheck?.apiId) || 0;
+      const cleanHash = String(credsToCheck?.apiHash || '').trim();
+      const effective: ApiCredentials = { apiId: cleanId, apiHash: cleanHash };
+      if (!isValidApiCreds(effective)) {
+        setForceShowApiBox(true);
+        setAuthError(t.apiCredsRequiredError);
+        return null;
+      }
+      setForceShowApiBox(false);
+      return effective;
+    },
+    [t.apiCredsRequiredError],
+  );
 
   const handleStartQr = useCallback(async () => {
     const creds = validateApiCreds(apiCredsRef.current);
@@ -575,16 +646,10 @@ export function App() {
       await telegramBridge.startQr();
     } catch (err) {
       setAuthStep('idle');
-      const rawMsg = err instanceof Error ? err.message : 'QR login failed';
-      setAuthError(
-        rawMsg.includes('API_ID_INVALID')
-          ? (lang === 'fa'
-              ? 'کد API ID یا API Hash وارد شده توسط تلگرام رد شد. لطفاً ارقام و حروف کپی شده از my.telegram.org را در کادر تنظیمات API دوباره بررسی کنید.'
-              : 'Telegram rejected this API ID / API Hash. Please verify your credentials on my.telegram.org.')
-          : rawMsg
-      );
+      const rawMsg = err instanceof Error ? err.message : t.errQrLoginFailed;
+      setAuthError(rawMsg.includes('API_ID_INVALID') ? t.apiIdInvalidError : rawMsg);
     }
-  }, [lang]);
+  }, [validateApiCreds, t.errQrLoginFailed, t.apiIdInvalidError]);
 
   const handleSendCode = useCallback(async (phone: string) => {
     const creds = validateApiCreds(apiCredsRef.current);
@@ -602,16 +667,10 @@ export function App() {
       }
     } catch (err) {
       setAuthStep('idle');
-      const rawMsg = err instanceof Error ? err.message : 'Failed to send code';
-      setAuthError(
-        rawMsg.includes('API_ID_INVALID')
-          ? (lang === 'fa'
-              ? 'کد API ID یا API Hash وارد شده توسط تلگرام رد شد. لطفاً ارقام و حروف کپی شده از my.telegram.org را در کادر تنظیمات API دوباره بررسی کنید.'
-              : 'Telegram rejected this API ID / API Hash. Please verify your credentials on my.telegram.org.')
-          : rawMsg
-      );
+      const rawMsg = err instanceof Error ? err.message : t.errSendCodeFailed;
+      setAuthError(rawMsg.includes('API_ID_INVALID') ? t.apiIdInvalidError : rawMsg);
     }
-  }, [handleAuthorized, lang]);
+  }, [validateApiCreds, handleAuthorized, t.errSendCodeFailed, t.apiIdInvalidError]);
 
   const handleVerifyCode = useCallback(async (code: string) => {
     setAuthError(null);
@@ -625,23 +684,24 @@ export function App() {
         setAuthStep('password_needed');
       }
     } catch (err) {
-      setAuthError(err instanceof Error ? err.message : 'Invalid confirmation code');
+      setAuthError(err instanceof Error ? err.message : t.errInvalidCode);
     }
-  }, [phoneState.phone, phoneState.phoneCodeHash]);
+  }, [phoneState.phone, phoneState.phoneCodeHash, t.errInvalidCode]);
 
   const handleCheckPassword = useCallback(async (password: string) => {
     setAuthError(null);
     try {
       await telegramBridge.checkPassword(password);
     } catch (err) {
-      setAuthError(err instanceof Error ? err.message : 'Invalid 2FA password');
+      setAuthError(err instanceof Error ? err.message : t.errInvalid2Fa);
     }
-  }, []);
+  }, [t.errInvalid2Fa]);
 
-  const handleUnlockSavedSession = async (pin?: string) => {
+  const handleUnlockSavedSession = useCallback(async (pin?: string) => {
     setAuthError(null);
     setAuthStep('connecting');
     try {
+      const meta = await getSavedSessionMeta();
       const bundle = await loadEncryptedSessionBundle(pin);
 
       // Automatically restore API credentials & network from the encrypted vault if needed
@@ -650,7 +710,9 @@ export function App() {
         effectiveCreds = bundle.apiCreds;
         setApiCreds(effectiveCreds);
         apiCredsRef.current = effectiveCreds;
-        saveApiCredentials(effectiveCreds).catch(() => {});
+        if (!meta.hasPin) {
+          saveApiCredentials(effectiveCreds).catch(() => {});
+        }
       }
 
       if (!validateApiCreds(effectiveCreds)) {
@@ -668,10 +730,9 @@ export function App() {
 
       const res = await telegramBridge.init(effectiveCreds, effectiveNetwork, bundle.sessionString);
       if (res.authorized) {
-        const usedPin = (pin ?? '').trim();
-        persistenceRef.current = { mode: 'vault', pin: usedPin };
+        persistenceRef.current = { mode: 'vault', pin: '' };
         setPersistenceMode('vault');
-        setVaultPin(usedPin);
+        setVaultPin('');
         await handleAuthorized({ skipPersist: true });
       } else {
         setAuthStep('idle');
@@ -694,6 +755,14 @@ export function App() {
           setAuthError(t.vaultPinLockedError);
           return;
         }
+        if (err.code === 'PIN_TOO_SHORT') {
+          setAuthError(t.errPinTooShort);
+          return;
+        }
+        if (err.code === 'PIN_TOO_WEAK') {
+          setAuthError(t.errPinTooWeak);
+          return;
+        }
         if (err.code === 'SESSION_NOT_FOUND') {
           setSavedSessionMeta({ exists: false, hasPin: false });
           setAuthError(err.message);
@@ -702,29 +771,53 @@ export function App() {
         setAuthError(err.message);
         return;
       }
-      setAuthError(
-        err instanceof Error
-          ? err.message
-          : 'Failed to reconnect to Telegram. Check your network/proxy settings.',
-      );
+      setAuthError(err instanceof Error ? err.message : t.errReconnectFailed);
+    } finally {
+      persistenceRef.current = { ...persistenceRef.current, pin: '' };
+      setVaultPin('');
     }
-  };
+  }, [
+    validateApiCreds,
+    handleAuthorized,
+    t.vaultRevokedError,
+    t.vaultPinRequiredError,
+    t.vaultWrongPinError,
+    t.vaultPinLockedError,
+    t.errPinTooShort,
+    t.errPinTooWeak,
+    t.errReconnectFailed,
+  ]);
 
-  const handleSaveSessionToVault = async (pin: string) => {
-    const { sessionString } = await telegramBridge.exportSession();
-    const meta = await saveEncryptedSessionBundle(
-      {
-        sessionString,
-        apiCreds: apiCredsRef.current,
-        network: networkRef.current,
-      },
-      pin,
-    );
-    persistenceRef.current = { mode: 'vault', pin: pin.trim() };
-    setPersistenceMode('vault');
-    setVaultPin(pin.trim());
-    setSavedSessionMeta({ exists: true, hasPin: meta.hasPin });
-  };
+  const handleSaveSessionToVault = useCallback(async (pin: string) => {
+    try {
+      const { sessionString } = await telegramBridge.exportSession();
+      const meta = await saveEncryptedSessionBundle(
+        {
+          sessionString,
+          apiCreds: apiCredsRef.current,
+          network: networkRef.current,
+        },
+        pin,
+      );
+      persistenceRef.current = { mode: 'vault', pin: '' };
+      setPersistenceMode('vault');
+      setVaultPin('');
+      setSavedSessionMeta({ exists: true, hasPin: meta.hasPin });
+    } catch (err) {
+      if (err instanceof VaultError) {
+        if (err.code === 'PIN_TOO_SHORT') {
+          throw new Error(t.errPinTooShort);
+        }
+        if (err.code === 'PIN_TOO_WEAK') {
+          throw new Error(t.errPinTooWeak);
+        }
+      }
+      throw err instanceof Error ? err : new Error(t.errVaultSaveFailed);
+    } finally {
+      persistenceRef.current = { ...persistenceRef.current, pin: '' };
+      setVaultPin('');
+    }
+  }, [t.errPinTooShort, t.errPinTooWeak, t.errVaultSaveFailed]);
 
   const handleDiscardSavedSession = useCallback(async () => {
     await clearSavedSession();
@@ -732,11 +825,21 @@ export function App() {
   }, []);
 
   const handleLockSession = useCallback(async () => {
+    if (apiCredsSaveTimerRef.current) {
+      clearTimeout(apiCredsSaveTimerRef.current);
+      apiCredsSaveTimerRef.current = null;
+    }
+    channelSyncReqIdRef.current += 1;
     if (!isSampleMode) {
+      await telegramBridge.abortChannelSync().catch(() => {});
       // Terminate worker/RAM session without calling Telegram logOut or wiping the encrypted vault
       telegramBridge.terminateOnly();
     }
+    setPersistenceMode('ephemeral');
     setVaultPin('');
+    persistenceRef.current = { mode: 'ephemeral', pin: '' };
+    setApiCreds(DEFAULT_API_CREDS);
+    apiCredsRef.current = DEFAULT_API_CREDS;
     setChannels([]);
     setBundlesByChannel({});
     setMediaPreviewsByPost({});
@@ -748,19 +851,28 @@ export function App() {
     setQrUrl(null);
     setQrExpiresAt(null);
     setFloodWaitSec(null);
+    setSyncingChannel(false);
+    setScanningAttribution(false);
+    setAttributionProgress(null);
+    setLiveError(null);
     setAuthStep('idle');
     setAuthError(null);
   }, [isSampleMode]);
 
   const handleLogout = useCallback(async () => {
+    if (apiCredsSaveTimerRef.current) {
+      clearTimeout(apiCredsSaveTimerRef.current);
+      apiCredsSaveTimerRef.current = null;
+    }
+    channelSyncReqIdRef.current += 1;
     if (!isSampleMode) {
       await telegramBridge.logoutAndTerminate();
-      await clearSavedSession();
+      await wipeAllVaultData();
       setSavedSessionMeta({ exists: false, hasPin: false });
-      const sanitizedNet = sanitizeNetworkForUnencryptedStorage(networkRef.current);
-      setNetwork(sanitizedNet);
-      networkRef.current = sanitizedNet;
-      saveNetworkConfig(sanitizedNet).catch(() => {});
+      setApiCreds(DEFAULT_API_CREDS);
+      apiCredsRef.current = DEFAULT_API_CREDS;
+      setNetwork(DEFAULT_NETWORK);
+      networkRef.current = DEFAULT_NETWORK;
     }
     setVaultPin('');
     setPersistenceMode('ephemeral');
@@ -775,6 +887,12 @@ export function App() {
     setSelectedPostKey(null);
     setSelectedDateKey(null);
     setQrUrl(null);
+    setQrExpiresAt(null);
+    setFloodWaitSec(null);
+    setSyncingChannel(false);
+    setScanningAttribution(false);
+    setAttributionProgress(null);
+    setLiveError(null);
     setAuthStep('idle');
     setAuthError(null);
   }, [isSampleMode]);
@@ -794,8 +912,14 @@ export function App() {
       setLoadingMediaPreview(false);
       return;
     }
-    if (mediaPreviewsRef.current[selectedPreviewCacheKey]) {
+    const cachedPreview = mediaPreviewsRef.current[selectedPreviewCacheKey];
+    if (cachedPreview) {
       setLoadingMediaPreview(false);
+      setMediaPreviewsByPost((prev) => {
+        const keys = Object.keys(prev);
+        if (keys[keys.length - 1] === selectedPreviewCacheKey) return prev;
+        return putMediaPreviewLru(prev, selectedPreviewCacheKey, cachedPreview);
+      });
       return;
     }
     const needsMediaFetch =
@@ -812,10 +936,7 @@ export function App() {
       .fetchPostMediaPreview(activeBundle.channel.id, selectedPost.key, selectedPost.messageIds)
       .then((preview) => {
         if (cancelled) return;
-        setMediaPreviewsByPost((prev) => ({
-          ...prev,
-          [selectedPreviewCacheKey]: preview,
-        }));
+        setMediaPreviewsByPost((prev) => putMediaPreviewLru(prev, selectedPreviewCacheKey, preview));
       })
       .catch(() => {})
       .finally(() => {
@@ -843,19 +964,19 @@ export function App() {
 
   const handleSelectChannel = useCallback(
     async (channelId: number) => {
+      const existing = bundlesByChannelRef.current[channelId];
       startTransition(() => {
         setActiveChannelId(channelId);
         setSelectedPostKey(null);
-        const existing = bundlesByChannel[channelId];
         if (existing) {
           setSelectedDateKey(pickDefaultDateKey(existing.overview.interactionsGraph));
         }
       });
-      if (!bundlesByChannel[channelId] && !isSampleMode) {
-        await loadLiveChannelBundle(channelId, scanDepth);
+      if (!existing && !isSampleMode) {
+        await loadLiveChannelBundle(channelId, scanDepthRef.current);
       }
     },
-    [bundlesByChannel, isSampleMode, loadLiveChannelBundle],
+    [isSampleMode, loadLiveChannelBundle],
   );
 
   const handleLoadLivePostDetails = useCallback(async (post: PostRecord) => {
@@ -870,16 +991,22 @@ export function App() {
         post.key,
         post.date,
       );
-      const evergreen = computeEvergreenRatio(post.date, details.dailyBreakdown);
+      const enriched: StoredPostDetailedStats = {
+        ...details,
+        normalizedVersion: POST_STATS_NORMALIZED_VERSION,
+      };
+      const evergreen = computeEvergreenRatio(post.date, enriched.dailyBreakdown);
       const pubCount = Math.min(
         post.forwards,
-        details.publicSharesTotal ?? details.publicForwards.length,
+        enriched.publicSharesTotal ?? enriched.publicForwards.length,
       );
+
+      saveChannelPostStat(activeBundle.channel.id, post.key, enriched).catch(() => {});
 
       setBundlesByChannel((prev) => {
         const cur = prev[activeBundle.channel.id];
         if (!cur) return prev;
-        const nextPostStats = { ...cur.postStatsByPost, [post.key]: details };
+        const nextPostStats = { ...cur.postStatsByPost, [post.key]: enriched };
         const nextPosts = cur.posts.map((p) =>
           p.key === post.key
             ? {
@@ -890,7 +1017,6 @@ export function App() {
               }
             : p,
         );
-        saveChannelPostStats(cur.channel.id, nextPostStats).catch(() => {});
         return {
           ...prev,
           [activeBundle.channel.id]: {
@@ -899,7 +1025,7 @@ export function App() {
             postStatsByPost: nextPostStats,
             publicForwardsByPost: {
               ...cur.publicForwardsByPost,
-              [post.key]: details.publicForwards,
+              [post.key]: enriched.publicForwards,
             },
             scanStatus: {
               ...cur.scanStatus,
@@ -909,13 +1035,11 @@ export function App() {
         };
       });
     } catch (err) {
-      setPostDetailsError(
-        err instanceof Error ? err.message : t.postStatsErrorMsg,
-      );
+      setPostDetailsError(err instanceof Error ? err.message : t.errLoadDetails);
     } finally {
       setLoadingPostDetails(false);
     }
-  }, [activeBundle, isSampleMode, t.postStatsErrorMsg]);
+  }, [activeBundle, isSampleMode, t.errLoadDetails]);
 
   const handleAbortAttribution = useCallback(() => {
     telegramBridge.abortAttribution().catch(() => {});
@@ -979,12 +1103,15 @@ export function App() {
         const cur = prev[activeBundle.channel.id];
         if (!cur) return prev;
 
-        const nextStats = { ...cur.postStatsByPost };
+        const nextStats: Record<string, StoredPostDetailedStats> = { ...cur.postStatsByPost };
         const nextPubForwards = { ...cur.publicForwardsByPost };
         const resultByKey = new Map(results.map((r) => [r.postKey, r]));
 
         for (const r of results) {
-          nextStats[r.postKey] = r.details;
+          nextStats[r.postKey] = {
+            ...r.details,
+            normalizedVersion: POST_STATS_NORMALIZED_VERSION,
+          };
           if (r.details.publicForwards.length > 0) {
             nextPubForwards[r.postKey] = r.details.publicForwards;
           }
@@ -1031,12 +1158,12 @@ export function App() {
         };
       });
     } catch (err) {
-      setLiveError(err instanceof Error ? err.message : 'Failed to scan message stats');
+      setLiveError(err instanceof Error ? err.message : t.errScanAttribution);
     } finally {
       setScanningAttribution(false);
       setAttributionProgress(null);
     }
-  }, [activeBundle, isSampleMode, scanningAttribution, selectedDateKey]);
+  }, [activeBundle, isSampleMode, scanningAttribution, selectedDateKey, t.errScanAttribution]);
 
   const handleCaptureSnapshot = useCallback(async () => {
     if (!activeBundle) return;
@@ -1090,31 +1217,87 @@ export function App() {
     setSavedSessionMeta({ exists: false, hasPin: false });
     setPersistenceMode('ephemeral');
     setVaultPin('');
+    persistenceRef.current = { mode: 'ephemeral', pin: '' };
   }, []);
+
+  const handleToggleLang = useCallback(() => {
+    setLang((l) => (l === 'fa' ? 'en' : 'fa'));
+  }, []);
+
+  const handleOpenVaultModal = useCallback(() => {
+    setSnapshotModalOpen(true);
+  }, []);
+
+  const handleCloseMobileSidebar = useCallback(() => {
+    setMobileSidebarOpen(false);
+  }, []);
+
+  const handleChangeApiCreds = useCallback((next: ApiCredentials) => {
+    setApiCreds(next);
+    apiCredsRef.current = next;
+    if (apiCredsSaveTimerRef.current) {
+      clearTimeout(apiCredsSaveTimerRef.current);
+      apiCredsSaveTimerRef.current = null;
+    }
+    if (
+      persistenceRef.current.mode === 'vault' &&
+      persistenceRef.current.pin.trim().length === 0 &&
+      isValidApiCreds(next)
+    ) {
+      apiCredsSaveTimerRef.current = setTimeout(() => {
+        apiCredsSaveTimerRef.current = null;
+        saveApiCredentials(next).catch(() => {});
+      }, 500);
+    }
+  }, []);
+
+  const handleChangePersistence = useCallback((mode: SessionPersistenceMode, pin: string) => {
+    persistenceRef.current = { mode, pin };
+    setPersistenceMode(mode);
+    setVaultPin(pin);
+    if (apiCredsSaveTimerRef.current) {
+      clearTimeout(apiCredsSaveTimerRef.current);
+      apiCredsSaveTimerRef.current = null;
+    }
+  }, []);
+
+  const modalSuspenseFallback = (
+    <div
+      role="status"
+      aria-live="polite"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-xs"
+    >
+      <div className="tg-panel rounded-xl px-4 py-3 flex items-center gap-2.5 text-xs text-[#F0F4F8]">
+        <Loader2 className="w-4 h-4 animate-spin text-[#2AABEE]" aria-hidden="true" />
+        <span>{t.connectingLabel}</span>
+      </div>
+    </div>
+  );
+
+  const tabSuspenseFallback = (
+    <div
+      role="status"
+      aria-live="polite"
+      className="tg-panel rounded-xl p-8 flex items-center justify-center gap-2.5 text-xs text-[#8B9BB0]"
+    >
+      <Loader2 className="w-4 h-4 animate-spin text-[#2AABEE]" aria-hidden="true" />
+      <span>{t.renderingGraphsLabel}</span>
+    </div>
+  );
 
   if (authStep !== 'authorized') {
     return (
       <>
         <AuthScreen
           lang={lang}
-          onToggleLang={() => setLang((l) => (l === 'fa' ? 'en' : 'fa'))}
+          onToggleLang={handleToggleLang}
           network={network}
           onOpenNetworkModal={() => setNetworkModalOpen(true)}
           apiCreds={apiCreds}
-          onChangeApiCreds={(next) => {
-            setApiCreds(next);
-            apiCredsRef.current = next;
-            if (!(persistenceRef.current.mode === 'vault' && persistenceRef.current.pin.trim().length > 0)) {
-              saveApiCredentials(next).catch(() => {});
-            }
-          }}
+          onChangeApiCreds={handleChangeApiCreds}
           persistenceMode={persistenceMode}
           vaultPin={vaultPin}
-          onChangePersistence={(mode, pin) => {
-            persistenceRef.current = { mode, pin };
-            setPersistenceMode(mode);
-            setVaultPin(pin);
-          }}
+          onChangePersistence={handleChangePersistence}
           savedSessionMeta={savedSessionMeta}
           onUnlockSavedSession={handleUnlockSavedSession}
           onDiscardSavedSession={handleDiscardSavedSession}
@@ -1138,7 +1321,7 @@ export function App() {
         />
 
         {networkModalOpen && (
-          <Suspense fallback={null}>
+          <Suspense fallback={modalSuspenseFallback}>
             <NetworkModal
               open={networkModalOpen}
               config={network}
@@ -1165,12 +1348,12 @@ export function App() {
         onSelectChannel={handleSelectChannel}
         isSampleMode={isSampleMode}
         persistenceMode={persistenceMode}
-        onToggleLang={() => setLang((l) => (l === 'fa' ? 'en' : 'fa'))}
-        onOpenVaultModal={() => setSnapshotModalOpen(true)}
+        onToggleLang={handleToggleLang}
+        onOpenVaultModal={handleOpenVaultModal}
         onLockSession={handleLockSession}
         onLogout={handleLogout}
         mobileOpen={mobileSidebarOpen}
-        onCloseMobile={() => setMobileSidebarOpen(false)}
+        onCloseMobile={handleCloseMobileSidebar}
       />
 
       <div className="flex-1 min-w-0 flex flex-col">
@@ -1182,21 +1365,28 @@ export function App() {
               <button
                 type="button"
                 onClick={() => setMobileSidebarOpen(true)}
-                aria-label="Open channels menu"
-                className="lg:hidden rounded-lg p-1.5 text-[#8B9BB0] hover:bg-white/10 hover:text-[#F0F4F8] cursor-pointer"
+                aria-label={t.openChannelsMenu}
+                className="lg:hidden inline-flex items-center justify-center min-w-[40px] min-h-[40px] rounded-lg p-1.5 text-[#8B9BB0] hover:bg-white/10 hover:text-[#F0F4F8] cursor-pointer"
               >
-                <Menu className="w-5 h-5" />
+                <Menu className="w-5 h-5" aria-hidden="true" />
               </button>
               {activeBundle && <ChannelAvatar channel={activeBundle.channel} size={30} />}
               <div className="min-w-0">
-                <h1 className="text-sm sm:text-[15px] font-semibold text-[#F0F4F8] truncate">
+                <h1
+                  title={activeBundle?.channel.title ?? t.appName}
+                  className="text-sm sm:text-[15px] font-semibold text-[#F0F4F8] truncate"
+                >
                   {activeBundle?.channel.title ?? t.appName}
                 </h1>
               </div>
             </div>
 
             {/* Zone 2: Clean Segmented Tabs (Desktop) */}
-            <nav className="hidden md:flex items-center gap-1 rounded-lg bg-[#090C10]/85 p-1 border border-white/[0.08]">
+            <nav
+              role="tablist"
+              aria-label={t.tabOverview}
+              className="hidden md:flex items-center gap-1 rounded-lg bg-[#090C10]/85 p-1 border border-white/[0.08]"
+            >
               {(
                 [
                   { id: 'overview', label: t.tabOverview },
@@ -1209,6 +1399,8 @@ export function App() {
                   <button
                     key={tab.id}
                     type="button"
+                    role="tab"
+                    aria-selected={active}
                     onClick={() => startTransition(() => setActiveTab(tab.id))}
                     className={`rounded-md px-3 py-1 text-xs font-medium whitespace-nowrap shrink-0 transition-colors cursor-pointer ${
                       active
@@ -1227,9 +1419,11 @@ export function App() {
               <button
                 type="button"
                 onClick={() => setSnapshotModalOpen(true)}
+                aria-label={t.snapshotsBtn}
+                title={t.snapshotsBtn}
                 className="inline-flex items-center gap-1.5 rounded-lg border border-white/12 bg-[#11161D]/90 px-3 py-1.5 text-xs font-medium text-[#F0F4F8] hover:bg-[#1A222D] whitespace-nowrap shrink-0 cursor-pointer"
               >
-                <Camera className="w-3.5 h-3.5 text-[#5EC2F6]" />
+                <Camera className="w-3.5 h-3.5 text-[#5EC2F6]" aria-hidden="true" />
                 <span className="hidden sm:inline">{t.snapshotsBtn}</span>
               </button>
 
@@ -1252,7 +1446,10 @@ export function App() {
                     onClick={() => loadLiveChannelBundle(activeBundle.channel.id, scanDepth)}
                     className="inline-flex items-center gap-1.5 rounded-lg bg-[#2AABEE] px-3 py-1.5 text-xs font-semibold text-[#090C10] hover:bg-[#3CB7F5] disabled:opacity-60 whitespace-nowrap shrink-0 cursor-pointer"
                   >
-                    <RefreshCw className={`w-3.5 h-3.5 ${syncingChannel ? 'animate-spin' : ''}`} />
+                    <RefreshCw
+                      className={`w-3.5 h-3.5 ${syncingChannel ? 'animate-spin' : ''}`}
+                      aria-hidden="true"
+                    />
                     <span>{syncingChannel ? `${t.syncingText} (${scanProgressCount})` : t.syncNowBtn}</span>
                   </button>
                 </div>
@@ -1260,13 +1457,40 @@ export function App() {
             </div>
           </div>
 
+          {/* Mobile Scan Depth Bar */}
+          {!isSampleMode && activeBundle && (
+            <div className="flex sm:hidden items-center justify-between gap-2 border-t border-white/[0.06] px-3 py-1.5">
+              <label
+                htmlFor="mobile-scan-depth"
+                className="text-[11px] font-medium text-[#8B9BB0]"
+              >
+                {t.scanDepthLabel}
+              </label>
+              <select
+                id="mobile-scan-depth"
+                value={scanDepth}
+                onChange={(e) => setScanDepth(Number(e.target.value) || 400)}
+                disabled={syncingChannel}
+                className="rounded-md border border-white/12 bg-[#11161D]/90 px-2 py-1 text-xs font-mono-num text-[#F0F4F8] focus:border-[#2AABEE] focus:outline-none cursor-pointer"
+              >
+                <option value={400}>400</option>
+                <option value={1000}>1000</option>
+                <option value={2500}>2500</option>
+              </select>
+            </div>
+          )}
+
           {/* Mobile Tab Strip */}
-          <div className="flex md:hidden border-t border-white/[0.08] px-3 py-1.5 gap-1 justify-between">
+          <div
+            role="tablist"
+            aria-label={t.tabOverview}
+            className="flex md:hidden border-t border-white/[0.08] px-3 py-1.5 gap-1 justify-between"
+          >
             {(
               [
-                { id: 'overview', label: lang === 'fa' ? 'نمای کلی' : 'Overview' },
-                { id: 'detective', label: lang === 'fa' ? 'پست‌ها و ویرال' : 'Posts' },
-                { id: 'audience', label: lang === 'fa' ? 'زمان‌بندی' : 'Timing' },
+                { id: 'overview', label: t.tabOverviewShort },
+                { id: 'detective', label: t.tabDetectiveShort },
+                { id: 'audience', label: t.tabAudienceShort },
               ] as const
             ).map((tab) => {
               const active = activeTab === tab.id;
@@ -1274,8 +1498,10 @@ export function App() {
                 <button
                   key={tab.id}
                   type="button"
+                  role="tab"
+                  aria-selected={active}
                   onClick={() => startTransition(() => setActiveTab(tab.id))}
-                  className={`flex-1 rounded-md px-2 py-1.5 text-[11px] font-medium whitespace-nowrap cursor-pointer ${
+                  className={`flex-1 min-h-[38px] rounded-md px-2 py-2 text-[11px] font-medium whitespace-nowrap cursor-pointer ${
                     active ? 'bg-[#2AABEE] text-[#090C10] font-semibold' : 'text-[#8B9BB0]'
                   }`}
                 >
@@ -1291,9 +1517,36 @@ export function App() {
           {liveError && (
             <div
               role="alert"
-              className="rounded-xl border border-[#e55353]/40 bg-[#e55353]/10 px-4 py-3 text-xs text-[#fca5a5]"
+              className="rounded-xl border border-[#e55353]/40 bg-[#e55353]/10 px-4 py-3 text-xs text-[#fca5a5] flex flex-wrap items-center justify-between gap-3"
             >
-              {liveError}
+              <span className="min-w-0 flex-1">{liveError}</span>
+              <div className="flex items-center gap-2 shrink-0">
+                {!isSampleMode && (
+                  <button
+                    type="button"
+                    disabled={syncingChannel}
+                    onClick={() => {
+                      if (activeChannelId) {
+                        loadLiveChannelBundle(activeChannelId, scanDepth);
+                      } else {
+                        handleAuthorized({ skipPersist: true });
+                      }
+                    }}
+                    className="inline-flex items-center gap-1 rounded-md border border-[#fca5a5]/30 bg-[#e55353]/15 px-2.5 py-1 text-[11px] font-medium text-[#fecaca] hover:bg-[#e55353]/25 disabled:opacity-50 cursor-pointer"
+                  >
+                    <RefreshCw className="w-3 h-3" aria-hidden="true" />
+                    <span>{t.retryBtn}</span>
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setLiveError(null)}
+                  className="inline-flex items-center gap-1 rounded-md border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[11px] font-medium text-[#F0F4F8] hover:bg-white/10 cursor-pointer"
+                >
+                  <X className="w-3 h-3" aria-hidden="true" />
+                  <span>{t.dismissBtn}</span>
+                </button>
+              </div>
             </div>
           )}
 
@@ -1303,7 +1556,7 @@ export function App() {
                 <div className="tg-panel rounded-xl p-5 border border-[#2AABEE]/25 bg-[#0B0F14]/90 space-y-3.5">
                   <div className="flex flex-wrap items-center justify-between gap-3">
                     <div className="flex items-center gap-2.5">
-                      <RefreshCw className="w-4 h-4 text-[#2AABEE] animate-spin" />
+                      <RefreshCw className="w-4 h-4 text-[#2AABEE] animate-spin" aria-hidden="true" />
                       <div>
                         <div className="text-sm font-semibold text-[#F0F4F8]">
                           {t.syncingText}
@@ -1314,7 +1567,7 @@ export function App() {
                       </div>
                     </div>
                     <div className="text-xs font-mono-num font-semibold px-2.5 py-1 rounded-md bg-[#2AABEE]/15 text-[#5EC2F6] border border-[#2AABEE]/30">
-                      {scanProgressCount} {lang === 'fa' ? 'پیام دریافت شد' : 'messages scanned'}
+                      {scanProgressCount} {t.messagesScannedLabel}
                     </div>
                   </div>
 
@@ -1323,12 +1576,28 @@ export function App() {
                       <div className="w-2 h-2 rounded-full bg-[#22C55E] shrink-0" />
                       <span className="truncate">{t.syncStep1}</span>
                     </div>
-                    <div className="p-3 rounded-lg bg-white/[0.03] border border-white/[0.06] flex items-center gap-2.5 text-xs text-[#F59E0B]">
-                      <div className="w-2 h-2 rounded-full bg-[#F59E0B] animate-ping shrink-0" />
+                    <div
+                      className={`p-3 rounded-lg bg-white/[0.03] border border-white/[0.06] flex items-center gap-2.5 text-xs ${
+                        scanProgressCount > 0 ? 'text-[#22C55E]' : 'text-[#F59E0B]'
+                      }`}
+                    >
+                      <div
+                        className={`w-2 h-2 rounded-full shrink-0 ${
+                          scanProgressCount > 0 ? 'bg-[#22C55E]' : 'bg-[#F59E0B] animate-ping'
+                        }`}
+                      />
                       <span className="truncate">{t.syncStep2}</span>
                     </div>
-                    <div className="p-3 rounded-lg bg-white/[0.03] border border-white/[0.06] flex items-center gap-2.5 text-xs text-[#8B9BB0]">
-                      <div className="w-2 h-2 rounded-full bg-[#8B9BB0] shrink-0" />
+                    <div
+                      className={`p-3 rounded-lg bg-white/[0.03] border border-white/[0.06] flex items-center gap-2.5 text-xs ${
+                        scanProgressCount > 0 ? 'text-[#5EC2F6]' : 'text-[#8B9BB0]'
+                      }`}
+                    >
+                      <div
+                        className={`w-2 h-2 rounded-full shrink-0 ${
+                          scanProgressCount > 0 ? 'bg-[#2AABEE] animate-ping' : 'bg-[#8B9BB0]'
+                        }`}
+                      />
                       <span className="truncate">{t.syncStep3}</span>
                     </div>
                   </div>
@@ -1345,7 +1614,7 @@ export function App() {
                   </div>
                   <div className="h-56 rounded-lg bg-white/[0.02] border border-white/[0.04] flex items-center justify-center animate-pulse">
                     <span className="text-xs text-[#8596AA] font-mono-num">
-                      {lang === 'fa' ? 'در حال رندر گراف‌های MTProto...' : 'Rendering MTProto graphs...'}
+                      {t.renderingGraphsLabel}
                     </span>
                   </div>
                 </div>
@@ -1356,7 +1625,7 @@ export function App() {
               </div>
             )
           ) : (
-            <>
+            <Suspense fallback={tabSuspenseFallback}>
               {activeTab === 'overview' && (
                 <OverviewTab
                   lang={lang}
@@ -1373,32 +1642,30 @@ export function App() {
                 />
               )}
 
-              <Suspense fallback={null}>
-                {activeTab === 'detective' && (
-                  <ShareDetectiveTab
-                    lang={lang}
-                    posts={activeBundle.posts}
-                    onOpenPost={handleOpenPost}
-                  />
-                )}
+              {activeTab === 'detective' && (
+                <ShareDetectiveTab
+                  lang={lang}
+                  posts={activeBundle.posts}
+                  onOpenPost={handleOpenPost}
+                />
+              )}
 
-                {activeTab === 'audience' && (
-                  <AudienceTab
-                    lang={lang}
-                    bundle={activeBundle}
-                    timezoneMode={timezoneMode}
-                    onChangeTimezoneMode={setTimezoneMode}
-                  />
-                )}
-              </Suspense>
-            </>
+              {activeTab === 'audience' && (
+                <AudienceTab
+                  lang={lang}
+                  bundle={activeBundle}
+                  timezoneMode={timezoneMode}
+                  onChangeTimezoneMode={setTimezoneMode}
+                />
+              )}
+            </Suspense>
           )}
         </main>
       </div>
 
       {/* Post Deep Inspector Drawer */}
       {selectedPost && (
-        <Suspense fallback={null}>
+        <Suspense fallback={modalSuspenseFallback}>
           <PostDetailDrawer
             lang={lang}
             post={selectedPost}
@@ -1408,7 +1675,9 @@ export function App() {
             }
             loadingMediaPreview={loadingMediaPreview}
             publicForwards={
-              activeBundle ? activeBundle.publicForwardsByPost[selectedPost.key] ?? [] : []
+              activeBundle
+                ? activeBundle.publicForwardsByPost[selectedPost.key] ?? EMPTY_FORWARDS
+                : EMPTY_FORWARDS
             }
             isSampleMode={isSampleMode}
             loadingDetails={loadingPostDetails}
@@ -1421,7 +1690,7 @@ export function App() {
 
       {/* Snapshots & Vault Modal */}
       {snapshotModalOpen && (
-        <Suspense fallback={null}>
+        <Suspense fallback={modalSuspenseFallback}>
           <SnapshotModal
             open={snapshotModalOpen}
             lang={lang}
